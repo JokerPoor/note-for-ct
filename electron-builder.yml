@@ -1,0 +1,54 @@
+appId: com.electron.app
+productName: note-for-ct
+directories:
+  buildResources: build
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+asarUnpack:
+  - resources/**
+win:
+  executableName: note-for-ct
+  # 明确指定 Windows 可执行文件与快捷方式图标（ICO 多尺寸：16/24/32/48/64/128/256）
+  icon: build/icon.ico
+nsis:
+  artifactName: ${name}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+  # 关闭一键安装，允许用户选择安装目录
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  # 注入自定义 NSIS 片段，使用系统主题的文件夹选择对话框
+  include: build/installer.nsh
+  # 安装器品牌化设置
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  # 安装完成后默认勾选“运行应用”
+  runAfterFinish: true
+mac:
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    - NSCameraUsageDescription: Application requests access to the device's camera.
+    - NSMicrophoneUsageDescription: Application requests access to the device's microphone.
+    - NSDocumentsFolderUsageDescription: Application requests access to the user's Documents folder.
+    - NSDownloadsFolderUsageDescription: Application requests access to the user's Downloads folder.
+  notarize: false
+dmg:
+  artifactName: ${name}-${version}.${ext}
+linux:
+  target:
+    - AppImage
+    - snap
+    - deb
+  maintainer: electronjs.org
+  category: Utility
+appImage:
+  artifactName: ${name}-${version}.${ext}
+npmRebuild: false
+publish:
+  provider: generic
+  url: https://example.com/auto-updates
