@@ -824,29 +824,39 @@ app.whenReady().then(async () => {
     if (!relativePath) return { ok: false, reason: 'relativePath 为空' }
     const target = join(currentVaultDir, relativePath)
     if (!fs.existsSync(target)) return { ok: true }
-    const stat = fs.statSync(target)
-    if (stat.isDirectory()) {
-      // 递归删除
-      const rm = fs.rm || fs.rmdir // Node 版本兼容
-      if (fs.rm) {
-        fs.rmSync(target, { recursive: true, force: true })
-      } else {
-        // fs.rmdir 在新版本被弃用，这里仅作兼容占位
-        const del = (p) => {
-          for (const name of fs.readdirSync(p)) {
-            const c = join(p, name)
-            const s = fs.statSync(c)
-            s.isDirectory() ? del(c) : fs.unlinkSync(c)
+    // 优先移动到系统回收站
+    try {
+      await shell.trashItem(target)
+      log.info('[FS 删除] 已移动到回收站：', target)
+      return { ok: true, trashed: true }
+    } catch (e) {
+      // 兜底：物理删除（仅在回收站失败时）
+      try {
+        const stat = fs.statSync(target)
+        if (stat.isDirectory()) {
+          if (fs.rm) {
+            fs.rmSync(target, { recursive: true, force: true })
+          } else {
+            const del = (p) => {
+              for (const name of fs.readdirSync(p)) {
+                const c = join(p, name)
+                const s = fs.statSync(c)
+                s.isDirectory() ? del(c) : fs.unlinkSync(c)
+              }
+              fs.rmdirSync(p)
+            }
+            del(target)
           }
-          fs.rmdirSync(p)
+        } else {
+          fs.unlinkSync(target)
         }
-        del(target)
+        log.warn('[FS 删除] 回收站失败，已执行物理删除：', target, String(e?.message || e))
+        return { ok: true, trashed: false, fallback: true }
+      } catch (e2) {
+        log.error('[FS 删除] 失败：', target, 'trashErr=', String(e?.message || e), 'removeErr=', String(e2?.message || e2))
+        return { ok: false, reason: String(e2?.message || e2) }
       }
-    } else {
-      fs.unlinkSync(target)
     }
-    log.info('[FS 删除] 目标：', target)
-    return { ok: true }
   })
 
   createWindow()

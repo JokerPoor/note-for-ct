@@ -1808,19 +1808,28 @@ const deleteItem = async (path) => {
     await log.error('打开 Vault 失败（删除时）：', opened?.reason || '')
     return
   }
-  // 执行删除
-  const res = await window.api.fsDelete({ relativePath: path })
-  if (res?.ok) {
-    if (currentFile.value === path) {
-      currentFile.value = ''
-      editorText.value = ''
+  // 执行删除（增加“删除中”提示）
+  let loadingMsg
+  try {
+    loadingMsg = ElMessage({ message: '正在删除...', type: 'info', duration: 0 })
+    const res = await window.api.fsDelete({ relativePath: path })
+    if (res?.ok) {
+      if (currentFile.value === path) {
+        currentFile.value = ''
+        editorText.value = ''
+      }
+      await loadNotesList()
+      ElMessage.success('已删除')
+      await log.info('已删除文件：', path)
+    } else {
+      ElMessage.error(res?.reason || '删除失败')
+      await log.error('删除失败：', path, res?.reason || '')
     }
-    await loadNotesList()
-    ElMessage.success('已删除')
-    await log.info('已删除文件：', path)
-  } else {
-    ElMessage.error(res?.reason || '删除失败')
-    await log.error('删除失败：', path, res?.reason || '')
+  } catch (e) {
+    ElMessage.error(String(e?.message || e))
+    await log.error('删除异常：', String(e?.message || e))
+  } finally {
+    try { loadingMsg?.close?.() } catch {}
   }
 }
 
@@ -1897,6 +1906,7 @@ const renameItem = async (path) => {
 
 // 批量删除：基于勾选节点
 const batchDelete = async () => {
+  let loadingMsg
   try {
     // 保险：确保主进程已打开当前 Vault
     if (!vaultDir.value) {
@@ -1921,6 +1931,8 @@ const batchDelete = async () => {
       cancelButtonText: '取消',
       type: 'warning'
     })
+    // 显示批量删除 Loading 提示
+    loadingMsg = ElMessage({ message: `正在批量删除（${targets.length} 项）...`, type: 'info', duration: 0 })
     for (const t of targets) {
       const r = await window.api.fsDelete({ relativePath: t.path })
       if (!r?.ok) {
@@ -1931,7 +1943,11 @@ const batchDelete = async () => {
     }
     await loadNotesList()
     ElMessage.success('批量删除完成')
-  } catch {}
+  } catch (e) {
+    if (e) await log.error('批量删除异常：', String(e?.message || e))
+  } finally {
+    try { loadingMsg?.close?.() } catch {}
+  }
 }
 
 // 拖拽移动：计算目标路径并执行重命名
