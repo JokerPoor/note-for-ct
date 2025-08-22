@@ -1,7 +1,7 @@
 <script setup>
 import { useRoute } from 'vue-router'
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
-import { ElConfigProvider } from 'element-plus'
+import { ElConfigProvider, ElMessageBox, ElLoading, ElMessage } from 'element-plus'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import en from 'element-plus/es/locale/lang/en'
 import {
@@ -36,6 +36,20 @@ const appVersion = ref('')
 const navCollapsed = ref(false)
 // 窗口是否最大化（用于动态切换图标）
 const isMaximized = ref(false)
+// 保存并退出流程中的 UI 状态
+const savingExit = ref(false)
+let savingLoading = null
+
+function showSavingOverlay(text = '正在保存…') {
+  try {
+    if (savingLoading) return
+    savingLoading = ElLoading.service({ lock: true, text, background: 'rgba(0, 0, 0, 0.25)' })
+  } catch {}
+}
+function hideSavingOverlay() {
+  try { savingLoading?.close?.() } catch {}
+  savingLoading = null
+}
 
 // 读取 UI 偏好（大小/语言），来源：设置持久化
 const loadUiPrefs = async () => {
@@ -90,6 +104,53 @@ onBeforeUnmount(() => {
   log.debug('卸载：移除事件监听')
 })
 
+// 主进程拦截退出时的回调：展示相同的确认弹窗并（可选）保存
+try {
+  window.api?.onConfirmQuit?.(async () => {
+    try {
+      await ElMessageBox.confirm(
+        '确认退出应用？如果有未保存的更改，请先保存。',
+        '确认退出',
+        {
+          type: 'warning',
+          confirmButtonText: '保存并退出',
+          cancelButtonText: '直接退出',
+          autofocus: false,
+          showClose: true,
+          distinguishCancelAndClose: true
+        }
+      )
+      // 选择“保存并退出”
+      savingExit.value = true
+      showSavingOverlay('正在保存…')
+      const ok = await new Promise((resolve) => {
+        let timer = null
+        const done = (evt) => {
+          try { if (timer) clearTimeout(timer) } catch {}
+          try { window.removeEventListener('app:saveAll:done', done) } catch {}
+          const detailOk = !!(evt && evt.detail && evt.detail.ok)
+          resolve(detailOk || false)
+        }
+        try { window.addEventListener('app:saveAll:done', done, { once: true }) } catch { resolve(true) }
+        try { window.dispatchEvent(new CustomEvent('app:saveAll')) } catch {}
+        timer = setTimeout(() => done({ detail: { ok: false } }), 5000)
+      })
+      hideSavingOverlay()
+      savingExit.value = false
+      if (!ok) {
+        ElMessage.error('保存失败，已取消退出')
+      }
+      return ok
+    } catch (action) {
+      // 取消分支：'cancel' 表示“直接退出”；'close' 表示点了对话框 X（不退出）
+      if (action === 'cancel') {
+        return true // 直接退出
+      }
+      return false // 关闭对话框（X），不退出
+    }
+  })
+} catch {}
+
 // 切换顶部导航折叠状态（收起/展开）
 function toggleNav() {
   try {
@@ -112,8 +173,54 @@ function onWinToggleMaximize() {
     }
   } catch {}
 }
-function onWinClose() {
-  try { window.api?.winClose?.() } catch {}
+async function onWinClose() {
+  try {
+    await ElMessageBox.confirm(
+      '确认退出应用？如果有未保存的更改，请先保存。',
+      '确认退出',
+      {
+        type: 'warning',
+        confirmButtonText: '保存并退出',
+        cancelButtonText: '直接退出',
+        autofocus: false,
+        showClose: true, // 右上角 X 作为“取消退出”
+        distinguishCancelAndClose: true
+      }
+    )
+    // 确认：保存并退出
+    try {
+      savingExit.value = true
+      showSavingOverlay('正在保存…')
+      const ok = await new Promise((resolve) => {
+        let timer = null
+        const done = (evt) => {
+          try { if (timer) clearTimeout(timer) } catch {}
+          try { window.removeEventListener('app:saveAll:done', done) } catch {}
+          const detailOk = !!(evt && evt.detail && evt.detail.ok)
+          resolve(detailOk || false)
+        }
+        try { window.addEventListener('app:saveAll:done', done, { once: true }) } catch { resolve(true) }
+        try { window.dispatchEvent(new CustomEvent('app:saveAll')) } catch {}
+        // 兜底：超时视为失败以保护数据
+        timer = setTimeout(() => done({ detail: { ok: false } }), 5000)
+      })
+      hideSavingOverlay()
+      savingExit.value = false
+      if (!ok) {
+        ElMessage.error('保存失败，已取消退出')
+        return
+      }
+    } catch {}
+    try { window.api?.winClose?.() } catch {}
+  } catch (action) {
+    // 取消分支：可能是 'cancel'（直接退出）或 'close'（点击 X，取消退出）
+    if (action === 'cancel') {
+      // 直接退出（不保存）
+      try { window.api?.winClose?.() } catch {}
+    } else {
+      // 关闭对话框（X），不退出
+    }
+  }
 }
 </script>
 
@@ -171,7 +278,7 @@ function onWinClose() {
                 </el-button>
               </el-tooltip>
               <el-tooltip content="关闭" placement="bottom">
-                <el-button circle type="danger" @click="onWinClose" aria-label="关闭">
+                <el-button circle type="danger" @click="onWinClose" :disabled="savingExit" aria-label="关闭">
                   <el-icon><Close /></el-icon>
                 </el-button>
               </el-tooltip>

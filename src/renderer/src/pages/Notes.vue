@@ -210,7 +210,7 @@ const flattenFilesFromTree = (root, srcAbs) => {
       const relDir = curAbsDir.startsWith(srcNorm + '/') ? curAbsDir.slice(srcNorm.length + 1) : ''
       const relPath = relDir ? `${relDir}/${n}` : n
       if (relPath) out.push(norm(relPath))
-      return
+      return false
     }
     let p = n?.path ? norm(n.path) : ''
     const nm = n?.name || (p ? p.split('/').pop() : '')
@@ -1616,13 +1616,13 @@ const newNote = async () => {
   }
 }
 
-// 保存当前编辑器内容到文件
+// 保存当前编辑器内容到文件，返回 boolean 表示是否成功
 const saveCurrent = async (opts = {}) => {
   // opts.silent: 是否静默（不弹出全局提示，用于自动保存）
   if (!currentFile.value) {
     ElMessage.info('没有打开的文件')
     await log.warn('保存跳过：未打开文件')
-    return
+    return false
   }
   // 保险：确保主进程已打开当前 Vault
   if (vaultDir.value) {
@@ -1630,7 +1630,7 @@ const saveCurrent = async (opts = {}) => {
     if (!opened?.ok) {
       ElMessage.error(opened?.reason || '无法打开本地库目录，请返回设置页重新选择')
       await log.error('打开 Vault 失败（保存时）：', opened?.reason || '')
-      return
+      return false
     }
   }
   const res = await window.api.fsWriteFile({
@@ -1649,11 +1649,46 @@ const saveCurrent = async (opts = {}) => {
       const t = new Date();
       saveAt.value = `${t.getHours().toString().padStart(2,'0')}:${t.getMinutes().toString().padStart(2,'0')}:${t.getSeconds().toString().padStart(2,'0')}`
     } catch {}
+    return true
   } else {
     ElMessage.error(`保存失败：${res?.reason || ''}`)
     await log.error('保存失败：', currentFile.value, res?.reason || '')
+    return false
   }
 }
+
+// 处理应用层“保存并退出”请求
+const onAppSaveAll = async () => {
+  try {
+    // 若有自动保存的定时器，提前清理，避免与手动保存竞争
+    try { if (_autoSaveTimer) clearTimeout(_autoSaveTimer) } catch {}
+    // 需要保存的条件：有打开文件，且内容不同步，或当前处于 saving/dirty
+    const needSave = !!(
+      currentFile.value && (
+        editorText.value !== lastSavedText.value ||
+        saveStatus.value === 'dirty' ||
+        saveStatus.value === 'saving'
+      )
+    )
+    let ok = true
+    if (needSave) {
+      saveStatus.value = 'saving'
+      ok = await saveCurrent({ silent: true })
+    }
+    try { window.dispatchEvent(new CustomEvent('app:saveAll:done', { detail: { ok } })) } catch {}
+  } catch (e) {
+    try { await log.error('处理 app:saveAll 失败：', String(e?.message || e)) } catch {}
+    try { window.dispatchEvent(new CustomEvent('app:saveAll:done', { detail: { ok: false, reason: String(e?.message || e) } })) } catch {}
+  }
+}
+
+onMounted(() => {
+  try { window.addEventListener('app:saveAll', onAppSaveAll) } catch {}
+})
+
+onUnmounted(() => {
+  try { window.removeEventListener('app:saveAll', onAppSaveAll) } catch {}
+})
 
 // =================
 // 自动保存（基于编辑内容变更，防抖 800ms）
