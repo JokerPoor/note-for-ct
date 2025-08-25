@@ -40,6 +40,38 @@ const props = defineProps({
   // 预览主题：github | dark | classic | solarized | sepia | nord | ctbb
   theme: { type: String, default: 'github' }
 })
+
+// 将预览中的 <audio>/<video>/<source> 的相对 src 重写为 Blob ObjectURL
+async function rewritePreviewMedia(rootEl) {
+  try {
+    const root = rootEl || document
+    if (!root) return
+    const nodes = Array.from(root.querySelectorAll?.('audio, video, source') || [])
+    if (!nodes.length) return
+    for (const el of nodes) {
+      try {
+        const old = el.getAttribute('src') || ''
+        if (!old || /^(data:|[a-zA-Z]+:\/\/|file:\/\/|\/\/)/.test(old)) continue
+        let rel = old.replace(/^\/+|^\\+/, '')
+        try { rel = decodeURI(rel) } catch {}
+        const r = await window.api?.fsReadFile?.({ relativePath: rel, encoding: 'base64' })
+        if (r?.ok && r.content) {
+          const mime = guessMediaMimeByPath(rel)
+          // base64 -> Uint8Array -> Blob -> ObjectURL
+          const bin = atob(r.content)
+          const len = bin.length
+          const buf = new Uint8Array(len)
+          for (let i = 0; i < len; i++) buf[i] = bin.charCodeAt(i)
+          const blob = new Blob([buf], { type: mime })
+          const url = URL.createObjectURL(blob)
+          mediaObjectUrls.add(url)
+          el.setAttribute('src', url)
+          el.setAttribute('data-src-inline', '1')
+        }
+      } catch {}
+    }
+  } catch {}
+}
 const emit = defineEmits(['update:modelValue', 'change'])
 
 // ByteMD 插件集合
@@ -123,6 +155,35 @@ function guessMimeByPath(p) {
   return 'application/octet-stream'
 }
 
+// ============ 新增：媒体（音频/视频）MIME 推断与资源重写 ============
+function guessMediaMimeByPath(p) {
+  try {
+    const x = String(p || '').toLowerCase()
+    if (x.endsWith('.mp3')) return 'audio/mpeg'
+    if (x.endsWith('.wav')) return 'audio/wav'
+    if (x.endsWith('.flac')) return 'audio/flac'
+    if (x.endsWith('.amr')) return 'audio/amr'
+    if (x.endsWith('.aac')) return 'audio/aac'
+    if (x.endsWith('.ogg')) return 'audio/ogg'
+    if (x.endsWith('.m4a')) return 'audio/mp4'
+    if (x.endsWith('.opus')) return 'audio/opus'
+    if (x.endsWith('.mp4')) return 'video/mp4'
+    if (x.endsWith('.webm')) return 'video/webm'
+    if (x.endsWith('.mkv')) return 'video/x-matroska'
+    if (x.endsWith('.mov')) return 'video/quicktime'
+    if (x.endsWith('.avi')) return 'video/x-msvideo'
+    if (x.endsWith('.m4v')) return 'video/x-m4v'
+  } catch {}
+  return 'application/octet-stream'
+}
+
+// 记录在预览区创建的 Object URL，组件卸载时统一释放
+const mediaObjectUrls = new Set()
+function revokeAllMediaObjectUrls() {
+  try { for (const u of mediaObjectUrls) URL.revokeObjectURL(u) } catch {}
+  mediaObjectUrls.clear()
+}
+
 async function rewritePreviewImages(rootEl) {
   try {
     const root = rootEl || document
@@ -171,6 +232,7 @@ function setupPreviewObserver(rootEl) {
     const obs = new MutationObserver(() => {
       try {
         rewritePreviewImages(root)
+        rewritePreviewMedia(root)
       } catch {}
     })
     obs.observe(root, { childList: true, subtree: true })
@@ -350,8 +412,14 @@ onMounted(async () => {
     if (rootEl.value) {
       setupPreviewObserver(rootEl.value)
       await rewritePreviewImages(rootEl.value)
+      await rewritePreviewMedia(rootEl.value)
     }
   } catch {}
+})
+
+onBeforeUnmount(() => {
+  // 释放预览中创建的对象 URL，避免内存泄漏
+  revokeAllMediaObjectUrls()
 })
 </script>
 

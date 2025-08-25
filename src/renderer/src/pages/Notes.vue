@@ -10,11 +10,7 @@ import { useRouter, onBeforeRouteLeave } from 'vue-router'
 import { createLogger } from '../utils/logger'
 // 文件类型判定与多类型查看器组件
 import { getFileKind } from '../fileTypes.js'
-import ImageViewer from '../components/viewers/ImageViewer.vue'
-import PdfViewer from '../components/viewers/PdfViewer.vue'
-import HtmlViewer from '../components/viewers/HtmlViewer.vue'
-import TextViewer from '../components/viewers/TextViewer.vue'
-import UnsupportedViewer from '../components/viewers/UnsupportedViewer.vue'
+import FileViewer from '../components/FileViewer.vue'
 // 图标（Element Plus）
 import {
   Search,
@@ -86,7 +82,8 @@ const currentKind = computed(() => (currentFile.value ? getFileKind(currentFile.
 // ================
 function getIconName(path, isDir, isOpen) {
   if (isDir) {
-    return isOpen ? 'vscode-icons:default-folder-open' : 'vscode-icons:default-folder'
+    // 使用 MDI 离线图标以避免因缺失而触发 Iconify 网络请求
+    return isOpen ? 'mdi:folder-open' : 'mdi:folder-outline'
   }
   const p = String(path || '')
   const norm = p.replace(/\\/g, '/')
@@ -2439,25 +2436,11 @@ function onEditorThemeChange(v) {
 
         <!-- 编辑器/预览主体：选择文件后显示，否则显示占位提示 -->
         <template v-if="currentFile">
-          <!-- Markdown：编辑器 -->
-          <MarkdownEditor
-            v-if="currentKind === 'markdown'"
-            ref="mdRef"
-            class="editor-flex"
-            v-model="editorText"
-            :currentFilePath="currentFile"
-            :theme="editorTheme"
+          <FileViewer
+            :relativePath="currentFile"
+            v-model:editorText="editorText"
+            :markdownTheme="editorTheme"
           />
-          <!-- 图片预览 -->
-          <ImageViewer v-else-if="currentKind === 'image'" :relativePath="currentFile" />
-          <!-- PDF 预览 -->
-          <PdfViewer v-else-if="currentKind === 'pdf'" :relativePath="currentFile" />
-          <!-- HTML 预览（iframe）-->
-          <HtmlViewer v-else-if="currentKind === 'html'" :relativePath="currentFile" />
-          <!-- 文本预览（只读）-->
-          <TextViewer v-else-if="currentKind === 'text'" :relativePath="currentFile" />
-          <!-- 不支持类型 -->
-          <UnsupportedViewer v-else :relativePath="currentFile" />
         </template>
         <template v-else>
           <div class="empty-state">

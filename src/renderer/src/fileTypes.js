@@ -8,6 +8,9 @@ const textExts = new Set([
   'css', 'scss', 'sass', 'less', 'yml', 'yaml', 'csv', 'tsv', 'ini', 'toml', 'xml'
 ])
 const htmlExts = new Set(['html', 'htm'])
+const audioExts = new Set(['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'opus', 'amr'])
+const videoExts = new Set(['mp4', 'webm', 'mkv', 'mov', 'avi'])
+const officeExts = new Set(['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'])
 
 export function getExt(p) {
   const s = String(p || '')
@@ -21,6 +24,9 @@ export function getFileKind(p) {
   if (imageExts.has(ext)) return 'image'
   if (ext === 'pdf') return 'pdf'
   if (htmlExts.has(ext)) return 'html'
+  if (audioExts.has(ext)) return 'audio'
+  if (videoExts.has(ext)) return 'video'
+  if (officeExts.has(ext)) return 'office'
   if (textExts.has(ext)) return 'text'
   return 'unsupported'
 }
