@@ -7,7 +7,9 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import simpleGit from 'simple-git'
 import axios from 'axios'
-import { autoUpdater } from 'electron-updater'
+import { autoUpdater, CancellationToken } from 'electron-updater'
+
+let mainWindowRef = null
 
 function createWindow() {
   // 创建主窗口
@@ -29,6 +31,9 @@ function createWindow() {
       sandbox: false
     }
   })
+
+  // 保存引用用于后续事件广播
+  try { mainWindowRef = mainWindow } catch {}
 
   // =====================
   // 应用版本信息
@@ -862,38 +867,115 @@ app.whenReady().then(async () => {
   createWindow()
 
   // =====================
-  // 自动更新（仅打包环境启用）
+  // 自动更新：事件转发 + IPC 控制（禁用静默安装）
   // =====================
+  let cancelToken = null
   try {
-    if (!is.dev) {
-      // 让 electron-updater 使用 electron-log 输出
+    // 让 electron-updater 使用 electron-log 输出
+    try {
+      autoUpdater.logger = log
+      autoUpdater.logger.transports.file.level = 'info'
+    } catch {}
+
+    // 禁止自动下载与自动安装，交由渲染进程控制
+    try {
+      autoUpdater.autoDownload = false
+      autoUpdater.autoInstallOnAppQuit = false
+      // Windows 上允许在安装时后台静默，第二个参数建议 true（isSilentWhenInstall=true）
+    } catch {}
+
+    // 主 -> 渲染：状态事件
+    autoUpdater.on('checking-for-update', () => {
+      try { log.info('[更新] 正在检查…') } catch {}
+      try { mainWindowRef?.webContents?.send('updater:checking') } catch {}
+    })
+    autoUpdater.on('update-available', (info) => {
+      try { log.info('[更新] 可用：', info?.version || '') } catch {}
+      try { mainWindowRef?.webContents?.send('updater:update-available', { version: info?.version, releaseName: info?.releaseName, releaseNotes: info?.releaseNotes }) } catch {}
+    })
+    autoUpdater.on('update-not-available', (info) => {
+      try { log.info('[更新] 暂无可用更新') } catch {}
+      try { mainWindowRef?.webContents?.send('updater:update-not-available', { info }) } catch {}
+    })
+    autoUpdater.on('error', (err) => {
+      try { log.error('[更新] 错误：', String(err?.message || err)) } catch {}
+      try { mainWindowRef?.webContents?.send('updater:error', { message: String(err?.message || err) }) } catch {}
+    })
+    autoUpdater.on('download-progress', (p) => {
+      const payload = {
+        percent: p?.percent || 0,
+        transferred: p?.transferred || 0,
+        total: p?.total || 0,
+        bytesPerSecond: p?.bytesPerSecond || 0
+      }
+      try { log.info('[更新] 下载中：', Math.floor(payload.percent) + '%') } catch {}
+      try { mainWindowRef?.webContents?.send('updater:download-progress', payload) } catch {}
+    })
+    autoUpdater.on('update-downloaded', (info) => {
+      try { log.info('[更新] 下载完成：', info?.version || '') } catch {}
+      // 由渲染进程决定何时安装
+      try { mainWindowRef?.webContents?.send('updater:update-downloaded', { version: info?.version }) } catch {}
+    })
+
+    // 渲染 -> 主：控制命令
+    ipcMain.handle('updater:check', async () => {
       try {
-        autoUpdater.logger = log
-        autoUpdater.logger.transports.file.level = 'info'
-      } catch {}
+        if (is.dev) {
+          // 开发环境下仅回传事件，避免真实网络请求
+          mainWindowRef?.webContents?.send('updater:update-not-available', {})
+          return { ok: true, dev: true }
+        }
+        mainWindowRef?.webContents?.send('updater:checking')
+        const res = await autoUpdater.checkForUpdates()
+        return { ok: true, result: !!res }
+      } catch (e) {
+        return { ok: false, reason: String(e?.message || e) }
+      }
+    })
 
-      // 事件监听（便于排查）
-      autoUpdater.on('update-available', (info) => {
-        try { log.info('[更新] 可用：', info?.version || '') } catch {}
-      })
-      autoUpdater.on('update-not-available', () => {
-        try { log.info('[更新] 暂无可用更新') } catch {}
-      })
-      autoUpdater.on('error', (err) => {
-        try { log.error('[更新] 错误：', String(err?.message || err)) } catch {}
-      })
-      autoUpdater.on('download-progress', (p) => {
-        try { log.info('[更新] 下载中：', Math.floor(p?.percent || 0) + '%') } catch {}
-      })
-      autoUpdater.on('update-downloaded', () => {
-        try { log.info('[更新] 下载完成，准备安装') } catch {}
-        try { autoUpdater.quitAndInstall() } catch {}
-      })
+    ipcMain.handle('updater:download', async () => {
+      try {
+        if (is.dev) return { ok: false, reason: '开发环境不下载更新' }
+        // 若已有下载在进行，先尝试取消
+        try { cancelToken?.cancel?.() } catch {}
+        cancelToken = new CancellationToken()
+        await autoUpdater.downloadUpdate(cancelToken)
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, reason: String(e?.message || e) }
+      }
+    })
 
-      // 根据 electron-builder 的 publish 配置自动识别更新源
-      autoUpdater.checkForUpdatesAndNotify()
+    ipcMain.handle('updater:cancel', async () => {
+      try {
+        if (cancelToken) {
+          cancelToken.cancel()
+          cancelToken = null
+          try { mainWindowRef?.webContents?.send('updater:canceled') } catch {}
+          return { ok: true, canceled: true }
+        }
+        return { ok: true, canceled: false }
+      } catch (e) {
+        return { ok: false, reason: String(e?.message || e) }
+      }
+    })
+
+    ipcMain.handle('updater:install', async () => {
+      try {
+        if (is.dev) return { ok: false, reason: '开发环境不支持安装更新' }
+        // 第二个参数 isSilentWhenInstall=true，避免额外系统对话框
+        autoUpdater.quitAndInstall(false, true)
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, reason: String(e?.message || e) }
+      }
+    })
+
+    // 启动时不自动安装，只检查一次（可选）
+    if (!is.dev) {
+      try { autoUpdater.checkForUpdates().catch(() => {}) } catch {}
     } else {
-      log.info('[更新] 开发环境，跳过自动更新')
+      log.info('[更新] 开发环境，已注册 IPC 与事件但不实际联网')
     }
   } catch (e) {
     try { log.error('[更新] 初始化异常：', String(e?.message || e)) } catch {}

@@ -60,6 +60,56 @@ const api = {
   appGetVersion: () => ipcRenderer.invoke('app:getVersion'),
   appGetBuild: () => ipcRenderer.invoke('app:getBuild'),
 
+  // =====================
+  // 应用更新（electron-updater，经主进程控制）
+  // =====================
+  updaterCheck: () => ipcRenderer.invoke('updater:check'),
+  updaterDownload: () => ipcRenderer.invoke('updater:download'),
+  updaterCancel: () => ipcRenderer.invoke('updater:cancel'),
+  updaterInstall: () => ipcRenderer.invoke('updater:install'),
+  onUpdaterChecking: (handler) => {
+    ipcRenderer.removeAllListeners('updater:checking')
+    ipcRenderer.on('updater:checking', () => {
+      try { handler && handler() } catch {}
+    })
+  },
+  onUpdaterAvailable: (handler) => {
+    ipcRenderer.removeAllListeners('updater:update-available')
+    ipcRenderer.on('updater:update-available', (_evt, payload) => {
+      try { handler && handler(payload) } catch {}
+    })
+  },
+  onUpdaterNotAvailable: (handler) => {
+    ipcRenderer.removeAllListeners('updater:update-not-available')
+    ipcRenderer.on('updater:update-not-available', (_evt, payload) => {
+      try { handler && handler(payload) } catch {}
+    })
+  },
+  onUpdaterError: (handler) => {
+    ipcRenderer.removeAllListeners('updater:error')
+    ipcRenderer.on('updater:error', (_evt, payload) => {
+      try { handler && handler(payload) } catch {}
+    })
+  },
+  onUpdaterProgress: (handler) => {
+    ipcRenderer.removeAllListeners('updater:download-progress')
+    ipcRenderer.on('updater:download-progress', (_evt, p) => {
+      try { handler && handler(p) } catch {}
+    })
+  },
+  onUpdaterDownloaded: (handler) => {
+    ipcRenderer.removeAllListeners('updater:update-downloaded')
+    ipcRenderer.on('updater:update-downloaded', (_evt, payload) => {
+      try { handler && handler(payload) } catch {}
+    })
+  },
+  onUpdaterCanceled: (handler) => {
+    ipcRenderer.removeAllListeners('updater:canceled')
+    ipcRenderer.on('updater:canceled', () => {
+      try { handler && handler() } catch {}
+    })
+  },
+
   // 窗口控制
   winMinimize: () => ipcRenderer.invoke('win:minimize'),
   winToggleMaximize: () => ipcRenderer.invoke('win:toggleMaximize'),

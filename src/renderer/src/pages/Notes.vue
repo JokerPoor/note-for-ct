@@ -11,6 +11,7 @@ import { createLogger } from '../utils/logger'
 // 文件类型判定与多类型查看器组件
 import { getFileKind } from '../fileTypes.js'
 import FileViewer from '../components/FileViewer.vue'
+import UpdateBar from '../components/UpdateBar.vue'
 // 图标（Element Plus）
 import {
   Search,
@@ -36,6 +37,36 @@ try {
   addCollection(vscodeIcons)
   addCollection(mdiIcons)
 } catch {}
+
+// 更新条触发：保存并安装
+const onSaveAndInstallFromBar = async () => {
+  try {
+    const needSave = !!(
+      currentFile.value && (
+        editorText.value !== lastSavedText.value ||
+        saveStatus.value === 'dirty' ||
+        saveStatus.value === 'saving'
+      )
+    )
+    if (needSave) {
+      saveStatus.value = 'saving'
+      const ok = await saveCurrent({ silent: true })
+      if (!ok) {
+        ElMessage.error('保存失败，已取消更新')
+        return
+      }
+    }
+    await ElMessageBox.confirm('应用将退出并安装更新，是否继续？', '安装更新', {
+      type: 'warning',
+      confirmButtonText: '继续',
+      cancelButtonText: '取消',
+      autofocus: false,
+    })
+    await window.api.updaterInstall()
+  } catch (e) {
+    ElMessage.error(String(e?.message || e))
+  }
+}
 
 // 日志器（作用域：笔记）
 const log = createLogger('笔记')
@@ -2486,6 +2517,8 @@ function onEditorThemeChange(v) {
     <div v-if="copyInProgress" class="copy-progress">
       正在复制 {{ copyDone }} / {{ copyTotal }}
     </div>
+    <!-- 更新条（固定在左下角，避免影响布局） -->
+    <UpdateBar @save-and-install="onSaveAndInstallFromBar" />
     <p class="mt-3 text-gray-400 text-xs foot-tip">若未选择本地库目录，请先在“设置向导”页面进行选择。</p>
   </section>
 </template>
