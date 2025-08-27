@@ -73,6 +73,20 @@ const api = {
       try { handler && handler() } catch {}
     })
   },
+
+  // =====================
+  // 最近文件（主进程持久化 + 系统集成）
+  // =====================
+  recentAdd: ({ relativePath }) => ipcRenderer.invoke('recent:add', { relativePath }),
+  recentList: () => ipcRenderer.invoke('recent:list'),
+  recentRemove: ({ relativePath }) => ipcRenderer.invoke('recent:remove', { relativePath }),
+  recentClear: () => ipcRenderer.invoke('recent:clear'),
+  onAppOpenFile: (handler) => {
+    ipcRenderer.removeAllListeners('app:open-file')
+    ipcRenderer.on('app:open-file', (_evt, payload) => {
+      try { handler && handler(payload) } catch {}
+    })
+  },
   onUpdaterAvailable: (handler) => {
     ipcRenderer.removeAllListeners('updater:update-available')
     ipcRenderer.on('updater:update-available', (_evt, payload) => {

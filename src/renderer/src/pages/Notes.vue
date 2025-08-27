@@ -103,6 +103,48 @@ const editorTheme = ref('github') // 可选：github | dark | classic | solarize
 const THEME_KEY = 'notes.editorTheme'
 const validThemes = ['github', 'dark', 'classic', 'solarized', 'sepia', 'nord', 'ctbb']
 
+// 最近文件管理对话框
+const recentDialogVisible = ref(false)
+const recentItems = ref([])
+const loadRecentList = async () => {
+  try {
+    const r = await window.api.recentList()
+    if (r?.ok) recentItems.value = r.list || []
+  } catch {}
+}
+const openRecentDialog = async () => {
+  recentDialogVisible.value = true
+  await loadRecentList()
+}
+const removeRecentItem = async (rel) => {
+  try {
+    if (!rel) return
+    const r = await window.api.recentRemove({ relativePath: rel })
+    if (!r?.ok) return ElMessage.error(r?.reason || '移除失败')
+    await loadRecentList()
+  } catch (e) {
+    ElMessage.error(String(e?.message || e))
+  }
+}
+const clearAllRecent = async () => {
+  try {
+    await ElMessageBox.confirm('确定清空最近文件列表？', '清空最近', { type: 'warning' })
+    const r = await window.api.recentClear()
+    if (!r?.ok) return ElMessage.error(r?.reason || '清空失败')
+    await loadRecentList()
+  } catch {}
+}
+const openFromRecent = async (rel) => {
+  if (!rel) return
+  // 与切换文件一致：未保存拦截
+  if (rel !== currentFile.value) {
+    const ok = await confirmBeforeLeave('打开最近文件')
+    if (!ok) return
+  }
+  await openFile(rel)
+  recentDialogVisible.value = false
+}
+
 // 当前文件类型（基于扩展名）
 const currentKind = computed(() => (currentFile.value ? getFileKind(currentFile.value) : 'unsupported'))
 
@@ -788,14 +830,19 @@ const readGitConfig = async () => {
     try {
       if (!path) return
       const rel = String(path).replace(/^\/+|^\\+/, '')
-      const r = await window.api?.fsOpenPath?.({ relativePath: rel })
+      // 优先使用 shellOpenPath，回退到 fsOpenPath
+      const r = await window.api?.shellOpenPath?.({ relativePath: rel }) || 
+                await window.api?.fsOpenPath?.({ relativePath: rel })
       if (!r?.ok) {
         ElMessage.error(r?.reason || '打开失败')
       }
     } catch (e) {
-      ElMessage.error(String(e?.message || e))
+      ElMessage.error('打开失败：' + String(e?.message || e))
     } finally {
-      contextMenuShow.value = false
+      // 只在右键菜单调用时关闭菜单
+      if (contextMenuShow.value) {
+        contextMenuShow.value = false
+      }
     }
   }
 
@@ -1459,8 +1506,17 @@ const openFile = async (path) => {
       const t = new Date();
       saveAt.value = `${t.getHours().toString().padStart(2,'0')}:${t.getMinutes().toString().padStart(2,'0')}:${t.getSeconds().toString().padStart(2,'0')}`
     } catch {}
+    // 上报最近打开文件（相对路径，最多 10 条由主进程维护）
+    try { await window.api.recentAdd({ relativePath: path }) } catch {}
     await log.info('文件已打开：', path)
   } else {
+    // 读取失败：清空当前编辑器，显示空状态提示
+    try {
+      currentFile.value = ''
+      editorText.value = ''
+      lastSavedText.value = ''
+      saveStatus.value = 'saved'
+    } catch {}
     ElMessage.error(res?.reason || '读取失败')
     await log.error('读取文件失败：', path, res?.reason || '')
   }
@@ -1710,12 +1766,30 @@ const onAppSaveAll = async () => {
   }
 }
 
+// 监听全局文件打开事件（来自 main.js 的路由跳转后触发）
+const onGlobalOpenFile = async (event) => {
+  try {
+    const path = event.detail?.path
+    if (!path) return
+    // 与切换文件一致：未保存拦截
+    if (path !== currentFile.value) {
+      const ok = await confirmBeforeLeave('打开最近文件')
+      if (!ok) return
+    }
+    await openFile(path)
+  } catch (e) {
+    try { await log.error('处理全局文件打开失败：', String(e?.message || e)) } catch {}
+  }
+}
+
 onMounted(() => {
   try { window.addEventListener('app:saveAll', onAppSaveAll) } catch {}
+  try { window.addEventListener('global:open-file', onGlobalOpenFile) } catch {}
 })
 
 onUnmounted(() => {
   try { window.removeEventListener('app:saveAll', onAppSaveAll) } catch {}
+  try { window.removeEventListener('global:open-file', onGlobalOpenFile) } catch {}
 })
 
 // =================
@@ -2423,6 +2497,9 @@ function onEditorThemeChange(v) {
             <el-tooltip content="强推：以本地为最终结果，覆盖远端" placement="top">
               <el-button size="small" type="danger" @click="doForcePush">强推</el-button>
             </el-tooltip>
+            <el-tooltip content="最近文件管理" placement="top">
+              <el-button size="small" :icon="Notebook" @click="openRecentDialog">最近</el-button>
+            </el-tooltip>
           </div>
         </div>
 
@@ -2517,6 +2594,36 @@ function onEditorThemeChange(v) {
     <div v-if="copyInProgress" class="copy-progress">
       正在复制 {{ copyDone }} / {{ copyTotal }}
     </div>
+
+    <!-- 最近文件管理对话框 -->
+    <el-dialog
+      v-model="recentDialogVisible"
+      title="最近文件"
+      width="520px"
+      append-to-body
+      :z-index="3000"
+    >
+      <div class="text-xs text-gray-500 mb-2">最多显示 10 条最近打开的文件。</div>
+      <el-empty v-if="!recentItems.length" description="暂无最近文件" />
+      <el-scrollbar v-else max-height="260px">
+        <ul class="list-none p-0 m-0">
+          <li v-for="p in recentItems" :key="p" class="flex items-center justify-between py-1.5 px-2 rounded hover:bg-gray-50">
+            <div class="truncate text-sm" :title="p">{{ p }}</div>
+            <div class="flex items-center gap-2">
+              <el-button size="small" type="primary" @click="openFromRecent(p)">打开</el-button>
+              <el-button size="small" @click="openWithSystemAt(p)">在系统中打开</el-button>
+              <el-button size="small" type="danger" @click="removeRecentItem(p)">移除</el-button>
+            </div>
+          </li>
+        </ul>
+      </el-scrollbar>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="recentDialogVisible=false">关闭</el-button>
+          <el-button type="warning" @click="clearAllRecent" :disabled="!recentItems.length">清空最近</el-button>
+        </span>
+      </template>
+    </el-dialog>
     <!-- 更新条（固定在左下角，避免影响布局） -->
     <UpdateBar @save-and-install="onSaveAndInstallFromBar" />
     <p class="mt-3 text-gray-400 text-xs foot-tip">若未选择本地库目录，请先在“设置向导”页面进行选择。</p>

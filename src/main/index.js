@@ -1,5 +1,5 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
-import { join, dirname } from 'path'
+import { app, shell, BrowserWindow, ipcMain, dialog, Menu, Tray } from 'electron'
+import { join, dirname, basename } from 'path'
 import { pathToFileURL } from 'url'
 import fs from 'fs'
 import log from 'electron-log/main'
@@ -10,6 +10,24 @@ import axios from 'axios'
 import { autoUpdater, CancellationToken } from 'electron-updater'
 
 let mainWindowRef = null
+let trayRef = null
+
+// 确保单实例运行，并处理二次实例参数（用于 JumpList 打开文件）
+const gotSingleLock = app.requestSingleInstanceLock()
+if (!gotSingleLock) {
+  try { app.quit() } catch {}
+} else {
+  app.on('second-instance', (_event, argv) => {
+    try {
+      const arg = (argv || []).find((a) => typeof a === 'string' && a.startsWith('--open-rel='))
+      if (arg) {
+        const rel = decodeURIComponent(String(arg).slice('--open-rel='.length))
+        try { mainWindowRef?.show?.(); mainWindowRef?.focus?.() } catch {}
+        try { mainWindowRef?.webContents?.send('app:open-file', { path: rel }) } catch {}
+      }
+    } catch {}
+  })
+}
 
 function createWindow() {
   // 创建主窗口
@@ -867,6 +885,128 @@ app.whenReady().then(async () => {
   createWindow()
 
   // =====================
+  // 最近文件：持久化、JumpList 与 Tray
+  // =====================
+  let recentFiles = [] // 相对路径数组，基于当前 Vault
+  try {
+    const saved = store.get('recentFiles')
+    if (Array.isArray(saved)) recentFiles = saved.filter((s) => typeof s === 'string')
+  } catch {}
+
+  const saveRecent = () => {
+    try { store.set('recentFiles', recentFiles.slice(0, 10)) } catch {}
+  }
+
+  const addRecent = (relPath) => {
+    try {
+      if (!relPath || typeof relPath !== 'string') return
+      // 去重并前插
+      recentFiles = [relPath, ...recentFiles.filter((p) => p !== relPath)].slice(0, 10)
+      saveRecent()
+      // 写入系统“最近文档”（Windows/macOS 生效），需要绝对路径
+      try {
+        if (currentVaultDir) {
+          const abs = join(currentVaultDir, relPath)
+          if (fs.existsSync(abs)) app.addRecentDocument(abs)
+        }
+      } catch {}
+      buildJumpList()
+      buildTrayMenu()
+    } catch {}
+  }
+
+  const clearRecent = () => {
+    try {
+      recentFiles = []
+      saveRecent()
+      buildJumpList()
+      buildTrayMenu()
+    } catch {}
+  }
+
+  const buildJumpList = () => {
+    try {
+      if (process.platform !== 'win32') return
+      const items = (recentFiles || []).slice(0, 10).map((p) => ({
+        program: process.execPath,
+        args: `--open-rel=${encodeURIComponent(p)}`,
+        title: basename(p),
+        description: p,
+        iconPath: process.execPath,
+        iconIndex: 0
+      }))
+      const categories = []
+      // 自定义“最近文件”分类（比系统 Recent 更可控）
+      categories.push({ type: 'custom', name: '最近文件', items })
+      // 可选：同时保留系统 Recent 分类（可能因系统策略被隐藏）
+      categories.push({ type: 'recent' })
+      app.setJumpList(categories)
+    } catch (e) {
+      try { log.warn('[JumpList] 构建失败：', String(e?.message || e)) } catch {}
+    }
+  }
+
+  const buildTrayMenu = () => {
+    try {
+      // 首次创建 Tray
+      if (!trayRef) {
+        try { trayRef = new Tray(icon) } catch {}
+        try { trayRef?.setToolTip?.('note-for-ct') } catch {}
+      }
+      if (!trayRef) return
+      const recentMenu = (recentFiles || []).slice(0, 10).map((p) => ({
+        label: basename(p),
+        toolTip: p,
+        click: () => {
+          try { mainWindowRef?.show?.(); mainWindowRef?.focus?.() } catch {}
+          try { mainWindowRef?.webContents?.send('app:open-file', { path: p }) } catch {}
+        }
+      }))
+      const template = [
+        { label: '打开主窗口', click: () => { try { mainWindowRef?.show?.(); mainWindowRef?.focus?.() } catch {} } },
+        { type: 'separator' },
+        { label: '最近打开', enabled: recentMenu.length > 0, submenu: recentMenu.length > 0 ? recentMenu : undefined },
+        { label: '清空最近', enabled: recentMenu.length > 0, click: () => clearRecent() },
+        { type: 'separator' },
+        { label: '退出', role: 'quit' }
+      ]
+      const menu = Menu.buildFromTemplate(template)
+      trayRef.setContextMenu(menu)
+    } catch (e) {
+      try { log.warn('[Tray] 构建失败：', String(e?.message || e)) } catch {}
+    }
+  }
+
+  // 首次构建 JumpList 与 Tray
+  buildJumpList()
+  buildTrayMenu()
+
+  // recent IPC：渲染端可上报/读取/清空
+  ipcMain.handle('recent:add', async (_evt, { relativePath }) => {
+    try { addRecent(relativePath) } catch {}
+    return { ok: true }
+  })
+  ipcMain.handle('recent:list', async () => {
+    return { ok: true, list: recentFiles.slice(0, 10) }
+  })
+  ipcMain.handle('recent:remove', async (_evt, { relativePath }) => {
+    try {
+      if (!relativePath) return { ok: false, reason: 'relativePath 为空' }
+      recentFiles = recentFiles.filter((p) => p !== relativePath)
+      saveRecent()
+      buildJumpList()
+      buildTrayMenu()
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, reason: String(e?.message || e) }
+    }
+  })
+  ipcMain.handle('recent:clear', async () => {
+    clearRecent()
+    return { ok: true }
+  })
+
+  // =====================
   // 自动更新：事件转发 + IPC 控制（禁用静默安装）
   // =====================
   let cancelToken = null
@@ -980,6 +1120,15 @@ app.whenReady().then(async () => {
   } catch (e) {
     try { log.error('[更新] 初始化异常：', String(e?.message || e)) } catch {}
   }
+
+  // 处理首次实例的 argv（来自 JumpList 的启动参数）
+  try {
+    const arg = (process.argv || []).find((a) => typeof a === 'string' && a.startsWith('--open-rel='))
+    if (arg) {
+      const rel = decodeURIComponent(String(arg).slice('--open-rel='.length))
+      try { mainWindowRef?.webContents?.send('app:open-file', { path: rel }) } catch {}
+    }
+  } catch {}
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
