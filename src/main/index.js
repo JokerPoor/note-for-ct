@@ -12,6 +12,68 @@ import { autoUpdater, CancellationToken } from 'electron-updater'
 let mainWindowRef = null
 let trayRef = null
 
+// 统一的新编辑器子窗口打开函数（供二次实例、IPC 调用）
+async function openEditorWindow({ relativePath, readonly = false } = {}) {
+  try {
+    if (!relativePath) throw new Error('relativePath 为空')
+    const child = new BrowserWindow({
+      width: 900,
+      height: 670,
+      show: false,
+      autoHideMenuBar: true,
+      frame: false,
+      titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
+      icon,
+      webPreferences: {
+        preload: join(__dirname, '../preload/index.js'),
+        sandbox: false
+      }
+    })
+    // 设置窗口标题为文件名，并阻止页面标题覆盖
+    try {
+      child.setTitle(basename(String(relativePath)))
+      child.on('page-title-updated', (e) => e.preventDefault())
+    } catch {}
+    // 关闭前与渲染进程联动确认（保存并退出）
+    const askRendererConfirmQuit = () => new Promise((resolve) => {
+      try {
+        const wc = child?.webContents
+        if (!wc) return resolve(true)
+        ipcMain.once('app:confirm-quit:reply', (_evt2, payload) => {
+          const ok = !!(payload && payload.ok)
+          resolve(ok)
+        })
+        wc.send('app:confirm-quit')
+        setTimeout(() => resolve(false), 15000)
+      } catch {
+        resolve(true)
+      }
+    })
+    child.on('close', async (e) => {
+      if (child.__quittingByUserConfirmed) return
+      e.preventDefault()
+      const ok = await askRendererConfirmQuit()
+      if (ok) {
+        child.__quittingByUserConfirmed = true
+        try { child.destroy() } catch {}
+      }
+    })
+    child.once('ready-to-show', () => { try { child.show() } catch {} })
+    // 构造目标 URL（Hash 路由）
+    const hash = `#/viewer?path=${encodeURIComponent(String(relativePath))}` + (readonly ? '&readonly=1' : '')
+    if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+      await child.loadURL(String(process.env['ELECTRON_RENDERER_URL']) + hash)
+    } else {
+      const html = join(__dirname, '../renderer/index.html')
+      await child.loadFile(html, { hash: hash.slice(1) })
+    }
+    return { ok: true }
+  } catch (e) {
+    try { log.error('[新窗口打开编辑器] 失败：', String(e?.message || e)) } catch {}
+    return { ok: false, reason: String(e?.message || e) }
+  }
+}
+
 // 确保单实例运行，并处理二次实例参数（用于 JumpList 打开文件）
 const gotSingleLock = app.requestSingleInstanceLock()
 if (!gotSingleLock) {
@@ -22,8 +84,8 @@ if (!gotSingleLock) {
       const arg = (argv || []).find((a) => typeof a === 'string' && a.startsWith('--open-rel='))
       if (arg) {
         const rel = decodeURIComponent(String(arg).slice('--open-rel='.length))
-        try { mainWindowRef?.show?.(); mainWindowRef?.focus?.() } catch {}
-        try { mainWindowRef?.webContents?.send('app:open-file', { path: rel }) } catch {}
+        // 直接新开子窗口，而非让主窗口内导航
+        openEditorWindow({ relativePath: rel, readonly: false })
       }
     } catch {}
   })
@@ -228,64 +290,7 @@ function createWindow() {
   // 在新窗口中打开编辑器（根据相对路径渲染查看器页）
   // payload: { relativePath: string, readonly?: boolean }
   ipcMain.handle('win:openEditor', async (_evt, { relativePath, readonly = false } = {}) => {
-    try {
-      if (!relativePath) return { ok: false, reason: 'relativePath 为空' }
-      const child = new BrowserWindow({
-        width: 900,
-        height: 670,
-        show: false,
-        autoHideMenuBar: true,
-        frame: false, // 去掉原生标题栏与系统按钮
-        titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
-        icon,
-        webPreferences: {
-          preload: join(__dirname, '../preload/index.js'),
-          sandbox: false
-        }
-      })
-      // 设置窗口标题为文件名，并阻止页面标题覆盖
-      try {
-        child.setTitle(basename(String(relativePath)))
-        child.on('page-title-updated', (e) => e.preventDefault())
-      } catch {}
-      // 关闭前与渲染进程联动确认（保存并退出）
-      const askRendererConfirmQuit = () => new Promise((resolve) => {
-        try {
-          const wc = child?.webContents
-          if (!wc) return resolve(true)
-          ipcMain.once('app:confirm-quit:reply', (_evt2, payload) => {
-            const ok = !!(payload && payload.ok)
-            resolve(ok)
-          })
-          wc.send('app:confirm-quit')
-          setTimeout(() => resolve(false), 15000)
-        } catch {
-          resolve(true)
-        }
-      })
-      child.on('close', async (e) => {
-        if (child.__quittingByUserConfirmed) return
-        e.preventDefault()
-        const ok = await askRendererConfirmQuit()
-        if (ok) {
-          child.__quittingByUserConfirmed = true
-          try { child.destroy() } catch {}
-        }
-      })
-      child.once('ready-to-show', () => { try { child.show() } catch {} })
-      // 构造目标 URL（Hash 路由）
-      const hash = `#/viewer?path=${encodeURIComponent(String(relativePath))}` + (readonly ? '&readonly=1' : '')
-      if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-        await child.loadURL(String(process.env['ELECTRON_RENDERER_URL']) + hash)
-      } else {
-        const html = join(__dirname, '../renderer/index.html')
-        await child.loadFile(html, { hash: hash.slice(1) })
-      }
-      return { ok: true }
-    } catch (e) {
-      log.error('[新窗口打开编辑器] 失败：', String(e?.message || e))
-      return { ok: false, reason: String(e?.message || e) }
-    }
+    return await openEditorWindow({ relativePath, readonly })
   })
 
   // 查询当前是否最大化
@@ -1063,8 +1068,8 @@ app.whenReady().then(async () => {
         label: basename(p),
         toolTip: p,
         click: () => {
-          try { mainWindowRef?.show?.(); mainWindowRef?.focus?.() } catch {}
-          try { mainWindowRef?.webContents?.send('app:open-file', { path: p }) } catch {}
+          // 统一新开子窗口
+          try { openEditorWindow({ relativePath: p, readonly: false }) } catch {}
         }
       }))
       const template = [
@@ -1231,7 +1236,8 @@ app.whenReady().then(async () => {
     const arg = (process.argv || []).find((a) => typeof a === 'string' && a.startsWith('--open-rel='))
     if (arg) {
       const rel = decodeURIComponent(String(arg).slice('--open-rel='.length))
-      try { mainWindowRef?.webContents?.send('app:open-file', { path: rel }) } catch {}
+      // 首次实例同样新开子窗口
+      try { openEditorWindow({ relativePath: rel, readonly: false }) } catch {}
     }
   } catch {}
 

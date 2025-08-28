@@ -136,13 +136,14 @@ const clearAllRecent = async () => {
 }
 const openFromRecent = async (rel) => {
   if (!rel) return
-  // 与切换文件一致：未保存拦截
-  if (rel !== currentFile.value) {
-    const ok = await confirmBeforeLeave('打开最近文件')
-    if (!ok) return
+  try {
+    // 在新子窗口打开，不影响当前窗口编辑状态
+    await window.api.winOpenEditor({ relativePath: rel, readonly: false })
+  } catch (e) {
+    ElMessage.error(String(e?.message || e))
+  } finally {
+    recentDialogVisible.value = false
   }
-  await openFile(rel)
-  recentDialogVisible.value = false
 }
 
 // 当前文件类型（基于扩展名）
