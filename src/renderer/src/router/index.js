@@ -7,6 +7,7 @@ import Setup from '../pages/Setup.vue'
 import Welcome from '../pages/Welcome.vue'
 import Notes from '../pages/Notes.vue'
 import About from '../pages/About.vue'
+import Viewer from '../pages/Viewer.vue'
 
 // 路由表：保持简单的顶层页面结构
 const routes = [
@@ -14,7 +15,8 @@ const routes = [
   { path: '/setup', component: Setup, meta: { title: '设置向导' } },
   { path: '/welcome', component: Welcome, meta: { title: '欢迎' } },
   { path: '/notes', component: Notes, meta: { title: '笔记' } },
-  { path: '/about', component: About, meta: { title: '关于' } }
+  { path: '/about', component: About, meta: { title: '关于' } },
+  { path: '/viewer', component: Viewer, meta: { title: '查看器' } }
 ]
 
 // 创建路由实例（Hash 模式便于打包分发）

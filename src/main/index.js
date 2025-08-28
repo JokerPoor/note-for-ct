@@ -225,6 +225,69 @@ function createWindow() {
     }
   })
 
+  // 在新窗口中打开编辑器（根据相对路径渲染查看器页）
+  // payload: { relativePath: string, readonly?: boolean }
+  ipcMain.handle('win:openEditor', async (_evt, { relativePath, readonly = false } = {}) => {
+    try {
+      if (!relativePath) return { ok: false, reason: 'relativePath 为空' }
+      const child = new BrowserWindow({
+        width: 900,
+        height: 670,
+        show: false,
+        autoHideMenuBar: true,
+        frame: false, // 去掉原生标题栏与系统按钮
+        titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
+        icon,
+        webPreferences: {
+          preload: join(__dirname, '../preload/index.js'),
+          sandbox: false
+        }
+      })
+      // 设置窗口标题为文件名，并阻止页面标题覆盖
+      try {
+        child.setTitle(basename(String(relativePath)))
+        child.on('page-title-updated', (e) => e.preventDefault())
+      } catch {}
+      // 关闭前与渲染进程联动确认（保存并退出）
+      const askRendererConfirmQuit = () => new Promise((resolve) => {
+        try {
+          const wc = child?.webContents
+          if (!wc) return resolve(true)
+          ipcMain.once('app:confirm-quit:reply', (_evt2, payload) => {
+            const ok = !!(payload && payload.ok)
+            resolve(ok)
+          })
+          wc.send('app:confirm-quit')
+          setTimeout(() => resolve(false), 15000)
+        } catch {
+          resolve(true)
+        }
+      })
+      child.on('close', async (e) => {
+        if (child.__quittingByUserConfirmed) return
+        e.preventDefault()
+        const ok = await askRendererConfirmQuit()
+        if (ok) {
+          child.__quittingByUserConfirmed = true
+          try { child.destroy() } catch {}
+        }
+      })
+      child.once('ready-to-show', () => { try { child.show() } catch {} })
+      // 构造目标 URL（Hash 路由）
+      const hash = `#/viewer?path=${encodeURIComponent(String(relativePath))}` + (readonly ? '&readonly=1' : '')
+      if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+        await child.loadURL(String(process.env['ELECTRON_RENDERER_URL']) + hash)
+      } else {
+        const html = join(__dirname, '../renderer/index.html')
+        await child.loadFile(html, { hash: hash.slice(1) })
+      }
+      return { ok: true }
+    } catch (e) {
+      log.error('[新窗口打开编辑器] 失败：', String(e?.message || e))
+      return { ok: false, reason: String(e?.message || e) }
+    }
+  })
+
   // 查询当前是否最大化
   ipcMain.handle('win:isMaximized', async () => {
     try {
@@ -388,6 +451,19 @@ app.whenReady().then(async () => {
   const tempCredentials = new Map() // key: account, value: token
   const CREDENTIAL_STORE_PREFIX = 'credentials.' // electron-store 中的命名空间前缀
 
+  // 启动时尝试从设置恢复 Vault 目录（若存在且有效）
+  try {
+    const savedVault = store.get?.('vault.dir')
+    if (savedVault && typeof savedVault === 'string' && fs.existsSync(savedVault)) {
+      currentVaultDir = savedVault
+      log.info('[仓库恢复] 启动时恢复 Vault 目录：', savedVault)
+    } else if (savedVault) {
+      log.warn('[仓库恢复] 设置中保存的 Vault 目录不存在：', savedVault)
+    }
+  } catch (e) {
+    try { log.warn('[仓库恢复] 读取失败：', String(e?.message || e)) } catch {}
+  }
+
   // 选择或创建本地笔记库目录
   ipcMain.handle('vault:select', async () => {
     const res = await dialog.showOpenDialog({
@@ -400,6 +476,7 @@ app.whenReady().then(async () => {
     const dir = res.filePaths[0]
     currentVaultDir = dir
     log.info('[仓库选择] 目录:', dir)
+    try { store.set?.('vault.dir', dir) } catch {}
     return { ok: true, dir }
   })
 
@@ -410,7 +487,17 @@ app.whenReady().then(async () => {
     }
     currentVaultDir = dir
     log.info('[仓库打开] 设置当前 Vault 目录：', dir)
+    try { store.set?.('vault.dir', dir) } catch {}
     return { ok: true, dir }
+  })
+
+  // 读取当前 Vault 目录（诊断用途）
+  ipcMain.handle('vault:get', async () => {
+    try {
+      return { ok: true, dir: currentVaultDir || '' }
+    } catch (e) {
+      return { ok: false, reason: String(e?.message || e) }
+    }
   })
 
   // 保存凭据（支持选择是否持久化：persist=true 使用 electron-store；false 仅会话内存）
@@ -805,12 +892,17 @@ app.whenReady().then(async () => {
     const file = join(currentVaultDir, relativePath)
     // 确保上级目录存在
     const parentDir = dirname(file)
-    if (parentDir && !fs.existsSync(parentDir)) {
-      fs.mkdirSync(parentDir, { recursive: true })
+    try {
+      if (parentDir && !fs.existsSync(parentDir)) {
+        fs.mkdirSync(parentDir, { recursive: true })
+      }
+      fs.writeFileSync(file, content ?? '', { encoding })
+      log.info('[FS 写入] 文件：', file, '大小：', String((content ?? '').length), '编码：', encoding)
+      return { ok: true, path: file }
+    } catch (e) {
+      log.error('[FS 写入] 失败：', file, String(e?.message || e))
+      return { ok: false, reason: String(e?.message || e) }
     }
-    fs.writeFileSync(file, content ?? '', { encoding })
-    log.info('[FS 写入] 文件：', file, '大小：', String((content ?? '').length), '编码：', encoding)
-    return { ok: true, path: file }
   })
 
   // 创建目录（递归）
@@ -927,20 +1019,33 @@ app.whenReady().then(async () => {
   const buildJumpList = () => {
     try {
       if (process.platform !== 'win32') return
-      const items = (recentFiles || []).slice(0, 10).map((p) => ({
-        program: process.execPath,
-        args: `--open-rel=${encodeURIComponent(p)}`,
-        title: basename(p),
-        description: p,
-        iconPath: process.execPath,
-        iconIndex: 0
-      }))
+      const validFiles = (recentFiles || []).filter(p => p && typeof p === 'string').slice(0, 10)
       const categories = []
-      // 自定义“最近文件”分类（比系统 Recent 更可控）
-      categories.push({ type: 'custom', name: '最近文件', items })
-      // 可选：同时保留系统 Recent 分类（可能因系统策略被隐藏）
+      
+      // 只有当存在有效的最近文件时才添加自定义分类
+      if (validFiles.length > 0) {
+        const items = validFiles.map((p) => ({
+          type: 'task',
+          program: process.execPath,
+          args: [`--open-rel=${encodeURIComponent(p)}`],
+          title: basename(p),
+          description: p,
+          iconPath: process.execPath,
+          iconIndex: 0
+        }))
+        categories.push({ type: 'custom', name: '最近文件', items })
+      }
+      
+      // 始终保留系统 Recent 分类
       categories.push({ type: 'recent' })
-      app.setJumpList(categories)
+      
+      // 确保 categories 不为空才调用 setJumpList
+      if (categories.length > 0) {
+        app.setJumpList(categories)
+      } else {
+        // 清空 JumpList
+        app.setJumpList(null)
+      }
     } catch (e) {
       try { log.warn('[JumpList] 构建失败：', String(e?.message || e)) } catch {}
     }

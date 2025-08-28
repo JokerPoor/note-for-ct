@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, watch, defineProps } from 'vue'
+import { ref, onMounted, watch, defineProps, defineExpose } from 'vue'
 import { ElMessage, ElButton, ElSpace } from 'element-plus'
 import { EditorState, Compartment } from '@codemirror/state'
 import { EditorView, keymap, highlightActiveLine } from '@codemirror/view'
@@ -140,6 +140,23 @@ async function saveFile() {
     saving.value = false
   }
 }
+
+// 暴露给父组件：用于关闭窗口前保存。静默返回结构化结果，父组件决定是否提示。
+async function saveIfDirty() {
+  try {
+    if (props.readonly) return { ok: true }
+    if (!dirty.value) return { ok: true }
+    const rel = String(props.relativePath || '').replace(/^\/+|^\\+/, '')
+    const r = await window.api?.fsWriteFile?.({ relativePath: rel, content: value.value, encoding: 'utf-8' })
+    if (!r?.ok) return { ok: false, reason: String(r?.reason || '写入失败') }
+    dirty.value = false
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, reason: String(e?.message || e) }
+  }
+}
+
+defineExpose({ saveIfDirty })
 
 async function applyLanguage() {
   try {

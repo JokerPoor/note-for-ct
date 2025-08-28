@@ -862,6 +862,29 @@ const readGitConfig = async () => {
     }
   }
 
+  // 在新窗口中打开编辑器（仅文件）
+  const openInNewWindowAt = async (path) => {
+    try {
+      if (!path) return
+      const rel = String(path).replace(/^\/+|^\\+/, '')
+      // 目录不支持
+      const st = await window.api?.fsStat?.({ relativePath: rel })
+      if (!st?.ok) throw new Error('目标不存在')
+      if (st?.isDir) {
+        ElMessage.info('目录暂不支持在新窗口中打开')
+        return
+      }
+      const r = await window.api?.winOpenEditor?.({ relativePath: rel })
+      if (!r?.ok) {
+        ElMessage.error(r?.reason || '打开新窗口失败')
+      }
+    } catch (e) {
+      ElMessage.error(String(e?.message || e))
+    } finally {
+      contextMenuShow.value = false
+    }
+  }
+
 // 强拉：以远端为准覆盖本地（危险操作）
 const doForcePull = async () => {
   const { branch: br } = await readGitConfig()
@@ -2438,6 +2461,13 @@ function onEditorThemeChange(v) {
             用系统打开
           </div>
           <div
+            v-if="!contextBlank && contextNode && !contextNode.isDir"
+            class="ctx-item"
+            @click="() => contextNode && openInNewWindowAt(contextNode.path)"
+          >
+            在新窗口中打开编辑器
+          </div>
+          <div
             v-if="!contextBlank"
             class="ctx-item"
             @click="() => contextNode && revealInFolderAt(contextNode.path)"
@@ -2445,7 +2475,7 @@ function onEditorThemeChange(v) {
             在资源管理器中显示
           </div>
         </div>
-      </el-card>
+        </el-card>
 
       <!-- 中间：垂直拖拽分隔条 -->
       <div class="v-resizer" @mousedown="onResizeStart" title="拖拽调整左侧宽度"></div>

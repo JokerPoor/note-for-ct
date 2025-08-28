@@ -6,6 +6,7 @@ const api = {
   // 笔记库目录：选择 / 打开
   selectVault: () => ipcRenderer.invoke('vault:select'),
   openVault: (dir) => ipcRenderer.invoke('vault:open', { dir }),
+  vaultGet: () => ipcRenderer.invoke('vault:get'),
 
   // 凭据操作（主进程负责实际存储）
   // persist=true 使用 electron-store 持久化；false 仅会话内存
@@ -129,6 +130,8 @@ const api = {
   winToggleMaximize: () => ipcRenderer.invoke('win:toggleMaximize'),
   winClose: () => ipcRenderer.invoke('win:close'),
   winIsMaximized: () => ipcRenderer.invoke('win:isMaximized'),
+  // 在新窗口打开编辑器
+  winOpenEditor: (payload) => ipcRenderer.invoke('win:openEditor', payload),
   onWinMaximizedChanged: (handler) => {
     ipcRenderer.removeAllListeners('win:maximized-changed')
     ipcRenderer.on('win:maximized-changed', (_evt, payload) => {

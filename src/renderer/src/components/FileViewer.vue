@@ -1,5 +1,5 @@
 <script setup>
-import { computed, toRefs, ref, watch } from 'vue'
+import { computed, toRefs, ref, watch, defineExpose } from 'vue'
 import { getFileKind } from '../fileTypes.js'
 import MarkdownEditor from './MarkdownEditor.vue'
 import ImageViewer from './viewers/ImageViewer.vue'
@@ -23,7 +23,7 @@ const props = defineProps({
   readonly: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['update:editorText'])
+const emit = defineEmits(['update:editorText', 'markdownReloaded'])
 
 const { relativePath } = toRefs(props)
 const currentKind = computed(() => (relativePath.value ? getFileKind(relativePath.value) : 'unsupported'))
@@ -33,9 +33,28 @@ const innerText = ref(props.editorText)
 watch(() => props.editorText, (v) => { innerText.value = v })
 watch(innerText, (v) => emit('update:editorText', v))
 
-// 重新加载：通过改变 key 让子组件强制重建（便于刷新媒体/iframe 等）
+// 重新加载：
+// - Markdown：直接从磁盘重读并上抛内容，保证编辑区与文件同步
+// - 其他类型：通过改变 key 强制重建（刷新媒体/iframe/CodeEditor 将在 onMounted 读文件）
 const reloadKey = ref(0)
-function reloadViewer() { reloadKey.value++ }
+async function reloadViewer() {
+  try {
+    if (currentKind.value === 'markdown') {
+      const rel = String(relativePath.value || '').replace(/^\/+|^\\+/, '')
+      if (!rel) return
+      const r = await window.api?.fsReadFile?.({ relativePath: rel, encoding: 'utf-8' })
+      if (r?.ok) {
+        const content = String(r.content || '')
+        innerText.value = content
+        emit('update:editorText', content)
+        emit('markdownReloaded', content)
+        return
+      }
+    }
+  } catch {}
+  // 默认回退：通过 key 触发子组件重建
+  reloadKey.value++
+}
 
 // HTML 文件预览/编辑模式
 const htmlMode = ref('preview') // 'preview' | 'edit'
@@ -57,6 +76,32 @@ function toggleAllowHtmlScripts() {
   // 变更 sandbox 需重载 iframe 才能生效
   if (htmlMode.value === 'preview') reloadViewer()
 }
+
+// 引用 CodeEditor 实例（文本/代码、以及 HTML 编辑模式下）
+const codeEditorRef = ref(null)
+const codeEditorHtmlRef = ref(null)
+
+// 暴露给父组件：关闭窗口前保存非 Markdown（文本/代码、或 HTML 编辑模式）
+async function saveIfDirtyForQuit() {
+  try {
+    const kind = currentKind.value
+    if (kind === 'text') {
+      const r = await codeEditorRef.value?.saveIfDirty?.()
+      if (r && r.ok === false) return { ok: false, reason: r.reason }
+      return { ok: true }
+    }
+    if (kind === 'html' && htmlMode.value === 'edit') {
+      const r = await codeEditorHtmlRef.value?.saveIfDirty?.()
+      if (r && r.ok === false) return { ok: false, reason: r.reason }
+      return { ok: true }
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, reason: String(e?.message || e) }
+  }
+}
+
+defineExpose({ saveIfDirtyForQuit })
 
 // 在系统中打开当前文件
 async function openInSystem() {
@@ -105,11 +150,11 @@ async function openInSystem() {
     <!-- HTML：根据模式显示 预览/编辑 -->
     <template v-else-if="currentKind === 'html'">
       <HtmlViewer v-if="htmlMode === 'preview'" :key="'htmlpv-' + reloadKey" :relativePath="relativePath" :allowScripts="allowHtmlScripts" />
-      <CodeEditor v-else :key="'htmled-' + reloadKey" :relativePath="relativePath" :readonly="false" />
+      <CodeEditor ref="codeEditorHtmlRef" v-else :key="'htmled-' + reloadKey" :relativePath="relativePath" :readonly="false" />
     </template>
 
     <!-- 文本/代码编辑（CodeMirror） -->
-    <CodeEditor v-else-if="currentKind === 'text'" :key="'txt-' + reloadKey" :relativePath="relativePath" :readonly="readonly" />
+    <CodeEditor ref="codeEditorRef" v-else-if="currentKind === 'text'" :key="'txt-' + reloadKey" :relativePath="relativePath" :readonly="readonly" />
 
     <!-- 音频预览 -->
     <AudioViewer v-else-if="currentKind === 'audio'" :key="'aud-' + reloadKey" :relativePath="relativePath" />
@@ -128,4 +173,10 @@ async function openInSystem() {
 <style scoped>
 .file-viewer-root { width: 100%; height: 100%; min-height: 0; display: flex; flex-direction: column; }
 .fv-toolbar { padding: 6px 8px; border-bottom: 1px solid #e5e7eb; }
+/* 让具体编辑/预览组件占满剩余高度（MarkdownEditor 使用 editor-flex 类） */
+.file-viewer-root :deep(.editor-flex) {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
 </style>
