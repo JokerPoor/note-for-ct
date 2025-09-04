@@ -160,6 +160,24 @@ const api = {
         ipcRenderer.send('app:confirm-quit:reply', { ok })
       }
     })
+  },
+
+  // 托盘：清空 PAT 并退出 的 UI 确认（主 -> 渲染 -> 主）
+  // 与 onConfirmQuit 类似，提供自定义 Element Plus 弹窗机会
+  onConfirmClearPatQuit: (handler) => {
+    ipcRenderer.removeAllListeners('ui:confirm-clear-pat-quit')
+    ipcRenderer.on('ui:confirm-clear-pat-quit', async () => {
+      let ok = false
+      try {
+        if (typeof handler === 'function') {
+          ok = !!(await handler())
+        }
+      } catch (e) {
+        ok = false
+      } finally {
+        ipcRenderer.send('ui:confirm-clear-pat-quit:reply', { ok })
+      }
+    })
   }
 }
 

@@ -40,6 +40,68 @@ const isMaximized = ref(false)
 const savingExit = ref(false)
 let savingLoading = null
 
+// 主题色（覆盖 Element Plus 主色）
+const themeColor = ref('#ef5da8') // 默认粉色
+const themeVisible = ref(false) // 主题色 Popover 显隐
+const presetColors = [
+  '#409EFF', // EP 默认蓝
+  '#3B82F6', // Tailwind 蓝
+  '#67C23A', // 绿
+  '#E6A23C', // 橙
+  '#F56C6C', // 红
+  '#10B981', // 青绿
+  '#8E44AD', // 紫
+  '#ef5da8' // 粉
+]
+function applyThemeColor(color) {
+  try {
+    const c = String(color || '').trim() || '#409EFF'
+    const root = document.documentElement
+    root.style.setProperty('--el-color-primary', c)
+    root.style.setProperty('--brand-color', c)
+    // 可选：简单派生一些浅色/深色变量（近似值）
+    // 若后续需要更精准的派生，可引入颜色工具库计算。
+    root.style.setProperty('--el-color-primary-dark-2', c)
+    root.style.setProperty('--el-color-primary-light-3', c + 'cc')
+    root.style.setProperty('--el-color-primary-light-5', c + '99')
+    root.style.setProperty('--el-color-primary-light-7', c + '66')
+    root.style.setProperty('--el-color-primary-light-8', c + '4d')
+    root.style.setProperty('--el-color-primary-light-9', c + '33')
+  } catch {}
+}
+async function persistThemeColor(color) {
+  try {
+    if (window.api?.settingsSet) {
+      await window.api.settingsSet('themeColor', color)
+    } else {
+      localStorage.setItem('themeColor', color)
+    }
+  } catch {}
+}
+async function loadThemeColor() {
+  try {
+    let color = null
+    if (window.api?.settingsGet) {
+      const r = await window.api.settingsGet('themeColor')
+      if (r?.ok && r.value) color = r.value
+    }
+    if (!color) {
+      color = localStorage.getItem('themeColor') || themeColor.value
+    }
+    themeColor.value = color
+    applyThemeColor(color)
+  } catch {}
+}
+async function setTheme(c) {
+  themeColor.value = c
+  applyThemeColor(c)
+  await persistThemeColor(c)
+  try {
+    log.info('主题色已切换：', c)
+  } catch {}
+  themeVisible.value = false
+}
+
 function showSavingOverlay(text = '正在保存…') {
   try {
     if (savingLoading) return
@@ -47,7 +109,9 @@ function showSavingOverlay(text = '正在保存…') {
   } catch {}
 }
 function hideSavingOverlay() {
-  try { savingLoading?.close?.() } catch {}
+  try {
+    savingLoading?.close?.()
+  } catch {}
   savingLoading = null
 }
 
@@ -86,13 +150,17 @@ const loadAppVersion = async () => {
 onMounted(() => {
   log.info('挂载：初始化 UI 偏好与 PAT 指示')
   loadUiPrefs()
+  loadThemeColor()
   window.addEventListener('app:configChanged', onConfigChanged)
   loadAppVersion()
   // 初始化并监听最大化状态
   try {
-    window.api?.winIsMaximized?.().then((r) => {
-      if (r?.ok) isMaximized.value = !!r.maximized
-    }).catch(() => {})
+    window.api
+      ?.winIsMaximized?.()
+      .then((r) => {
+        if (r?.ok) isMaximized.value = !!r.maximized
+      })
+      .catch(() => {})
     window.api?.onWinMaximizedChanged?.((max) => {
       isMaximized.value = !!max
     })
@@ -108,31 +176,37 @@ onBeforeUnmount(() => {
 try {
   window.api?.onConfirmQuit?.(async () => {
     try {
-      await ElMessageBox.confirm(
-        '确认退出应用？如果有未保存的更改，请先保存。',
-        '确认退出',
-        {
-          type: 'warning',
-          confirmButtonText: '保存并退出',
-          cancelButtonText: '直接退出',
-          autofocus: false,
-          showClose: true,
-          distinguishCancelAndClose: true
-        }
-      )
+      await ElMessageBox.confirm('确认退出应用？如果有未保存的更改，请先保存。', '确认退出', {
+        type: 'warning',
+        confirmButtonText: '保存并退出',
+        cancelButtonText: '直接退出',
+        autofocus: false,
+        showClose: true,
+        distinguishCancelAndClose: true
+      })
       // 选择“保存并退出”
       savingExit.value = true
       showSavingOverlay('正在保存…')
       const ok = await new Promise((resolve) => {
         let timer = null
         const done = (evt) => {
-          try { if (timer) clearTimeout(timer) } catch {}
-          try { window.removeEventListener('app:saveAll:done', done) } catch {}
+          try {
+            if (timer) clearTimeout(timer)
+          } catch {}
+          try {
+            window.removeEventListener('app:saveAll:done', done)
+          } catch {}
           const detailOk = !!(evt && evt.detail && evt.detail.ok)
           resolve(detailOk || false)
         }
-        try { window.addEventListener('app:saveAll:done', done, { once: true }) } catch { resolve(true) }
-        try { window.dispatchEvent(new CustomEvent('app:saveAll')) } catch {}
+        try {
+          window.addEventListener('app:saveAll:done', done, { once: true })
+        } catch {
+          resolve(true)
+        }
+        try {
+          window.dispatchEvent(new CustomEvent('app:saveAll'))
+        } catch {}
         timer = setTimeout(() => done({ detail: { ok: false } }), 5000)
       })
       hideSavingOverlay()
@@ -161,7 +235,9 @@ function toggleNav() {
 
 // 窗口控制事件（避免在模板中直接访问 window）
 function onWinMinimize() {
-  try { window.api?.winMinimize?.() } catch {}
+  try {
+    window.api?.winMinimize?.()
+  } catch {}
 }
 function onWinToggleMaximize() {
   try {
@@ -175,18 +251,14 @@ function onWinToggleMaximize() {
 }
 async function onWinClose() {
   try {
-    await ElMessageBox.confirm(
-      '确认退出应用？如果有未保存的更改，请先保存。',
-      '确认退出',
-      {
-        type: 'warning',
-        confirmButtonText: '保存并退出',
-        cancelButtonText: '直接退出',
-        autofocus: false,
-        showClose: true, // 右上角 X 作为“取消退出”
-        distinguishCancelAndClose: true
-      }
-    )
+    await ElMessageBox.confirm('确认退出应用？如果有未保存的更改，请先保存。', '确认退出', {
+      type: 'warning',
+      confirmButtonText: '保存并退出',
+      cancelButtonText: '直接退出',
+      autofocus: false,
+      showClose: true, // 右上角 X 作为“取消退出”
+      distinguishCancelAndClose: true
+    })
     // 确认：保存并退出
     try {
       savingExit.value = true
@@ -194,13 +266,23 @@ async function onWinClose() {
       const ok = await new Promise((resolve) => {
         let timer = null
         const done = (evt) => {
-          try { if (timer) clearTimeout(timer) } catch {}
-          try { window.removeEventListener('app:saveAll:done', done) } catch {}
+          try {
+            if (timer) clearTimeout(timer)
+          } catch {}
+          try {
+            window.removeEventListener('app:saveAll:done', done)
+          } catch {}
           const detailOk = !!(evt && evt.detail && evt.detail.ok)
           resolve(detailOk || false)
         }
-        try { window.addEventListener('app:saveAll:done', done, { once: true }) } catch { resolve(true) }
-        try { window.dispatchEvent(new CustomEvent('app:saveAll')) } catch {}
+        try {
+          window.addEventListener('app:saveAll:done', done, { once: true })
+        } catch {
+          resolve(true)
+        }
+        try {
+          window.dispatchEvent(new CustomEvent('app:saveAll'))
+        } catch {}
         // 兜底：超时视为失败以保护数据
         timer = setTimeout(() => done({ detail: { ok: false } }), 5000)
       })
@@ -211,12 +293,16 @@ async function onWinClose() {
         return
       }
     } catch {}
-    try { window.api?.winClose?.() } catch {}
+    try {
+      window.api?.winClose?.()
+    } catch {}
   } catch (action) {
     // 取消分支：可能是 'cancel'（直接退出）或 'close'（点击 X，取消退出）
     if (action === 'cancel') {
       // 直接退出（不保存）
-      try { window.api?.winClose?.() } catch {}
+      try {
+        window.api?.winClose?.()
+      } catch {}
     } else {
       // 关闭对话框（X），不退出
     }
@@ -262,6 +348,44 @@ async function onWinClose() {
                 </router-link>
               </el-tooltip>
               <div class="h-5 w-px bg-gray-200 mx-1"></div>
+              <!-- 主题色选择器 -->
+              <el-popover
+                v-model:visible="themeVisible"
+                placement="bottom"
+                trigger="click"
+                :width="240"
+                :teleported="false"
+                :persistent="true"
+              >
+                <template #reference>
+                  <el-button class="no-drag" circle aria-label="主题色" title="主题色">
+                    <span class="theme-dot" :style="{ backgroundColor: themeColor }"></span>
+                  </el-button>
+                </template>
+                <div class="theme-panel">
+                  <div class="title">选择主题色</div>
+                  <div class="swatches">
+                    <button
+                      v-for="c in presetColors"
+                      :key="c"
+                      class="swatch"
+                      :style="{ backgroundColor: c, outlineColor: c === themeColor ? c : 'transparent' }"
+                      :aria-label="'选择颜色 ' + c"
+                      @click="setTheme(c)"
+                    ></button>
+                  </div>
+                  <div class="custom color-picker-row">
+                    <span>自定义：</span>
+                    <el-color-picker
+                      v-model="themeColor"
+                      @change="setTheme"
+                      :show-alpha="false"
+                      :teleported="false"
+                    />
+                  </div>
+                </div>
+              </el-popover>
+              <div class="h-5 w-px bg-gray-200 mx-1"></div>
               <!-- 窗口控制：最小化 / 最大化 / 关闭 -->
               <el-tooltip content="最小化" placement="bottom">
                 <el-button circle @click="onWinMinimize" aria-label="最小化">
@@ -269,7 +393,11 @@ async function onWinClose() {
                 </el-button>
               </el-tooltip>
               <el-tooltip :content="isMaximized ? '还原' : '最大化'" placement="bottom">
-                <el-button circle @click="onWinToggleMaximize" :aria-label="isMaximized ? '还原' : '最大化'">
+                <el-button
+                  circle
+                  @click="onWinToggleMaximize"
+                  :aria-label="isMaximized ? '还原' : '最大化'"
+                >
                   <transition name="fade">
                     <el-icon :key="isMaximized ? 'restore' : 'maximize'">
                       <component :is="isMaximized ? CopyDocument : FullScreen" />
@@ -278,7 +406,13 @@ async function onWinClose() {
                 </el-button>
               </el-tooltip>
               <el-tooltip content="关闭" placement="bottom">
-                <el-button circle type="danger" @click="onWinClose" :disabled="savingExit" aria-label="关闭">
+                <el-button
+                  circle
+                  type="danger"
+                  @click="onWinClose"
+                  :disabled="savingExit"
+                  aria-label="关闭"
+                >
                   <el-icon><Close /></el-icon>
                 </el-button>
               </el-tooltip>
@@ -343,6 +477,45 @@ async function onWinClose() {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
 }
 
+/* 主题色按钮中的小圆点 */
+.theme-dot {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px #fff inset, 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
+/* 主题面板 */
+.theme-panel {
+  padding: 4px 4px 8px;
+}
+.theme-panel .title {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 6px;
+}
+.theme-panel .swatches {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.theme-panel .swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  outline: 2px solid transparent;
+}
+.theme-panel .color-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
 /* 内容区域：根据导航显示状态留出顶部空间 */
 .app-main.with-nav {
   /* 提供给子组件的全局变量：导航栏高度 */
@@ -405,8 +578,7 @@ async function onWinClose() {
   opacity: 0.25;
   pointer-events: none;
   /* 由多个小点构成的握把效果 */
-  background-image:
-    radial-gradient(currentColor 1px, transparent 1px),
+  background-image: radial-gradient(currentColor 1px, transparent 1px),
     radial-gradient(currentColor 1px, transparent 1px);
   background-position: 0 0, 5px 7px;
   background-size: 5px 7px;
@@ -426,4 +598,42 @@ async function onWinClose() {
 .fade-leave-to {
   opacity: 0;
 }
+</style>
+
+<!-- 全局滚动条样式（非 scoped）：细窄、圆角，颜色随主题变量联动 -->
+<style>
+/* Firefox 全局滚动条：细宽度 + 颜色跟随主题 */
+:root {
+  scrollbar-width: thin;
+  scrollbar-color: var(--el-color-primary, #409EFF) transparent;
+}
+
+/* WebKit（Chromium/Electron）滚动条 */
+/* 尽量保持细窄，避免占据空间；同时保留较大的圆角以显得轻盈 */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background-clip: padding-box;
+  border: 2px solid transparent; /* 通过内边距式描边让拇指更细 */
+  background-color: var(--el-color-primary-light-7, rgba(64, 158, 255, 0.35));
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--el-color-primary-light-5, rgba(64, 158, 255, 0.55));
+}
+*::-webkit-scrollbar-thumb:active {
+  background-color: var(--el-color-primary, #409EFF);
+}
+
+/* 大块可滚动容器在暗色背景上可选的轻微轨道可见度（默认透明即可） */
+/*
+.dark *::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.04);
+}
+*/
 </style>

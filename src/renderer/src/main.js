@@ -2,7 +2,7 @@ import 'element-plus/dist/index.css'
 import './assets/index.css'
 
 import { createApp } from 'vue'
-import ElementPlus from 'element-plus'
+import ElementPlus, { ElMessageBox } from 'element-plus'
 import App from './App.vue'
 import router from './router/index.js'
 
@@ -36,4 +36,32 @@ try {
   })
 } catch (e) {
   console.error('注册全局文件打开监听失败：', e)
+}
+
+// 托盘：清空 PAT 并退出 的 UI 确认
+try {
+  window.api?.onConfirmClearPatQuit?.(async () => {
+    try {
+      // 可选：确保主界面可见
+      try { /* 在渲染端无法直接唤起窗口，这里交由主进程已执行 show/focus */ } catch {}
+      await ElMessageBox.confirm(
+        '将清空已保存的 PAT 并关闭应用。请先保存所有未保存的文件，并执行同步（Git 推送）。',
+        '确认退出',
+        {
+          confirmButtonText: '确定',
+          cancelButtonText: '取消',
+          type: 'warning',
+          autofocus: false,
+          distinguishCancelAndClose: true,
+          closeOnClickModal: false,
+          closeOnPressEscape: true
+        }
+      )
+      return true
+    } catch {
+      return false
+    }
+  })
+} catch (e) {
+  console.error('注册清空 PAT 确认弹窗失败：', e)
 }

@@ -75,11 +75,31 @@ async function rewritePreviewMedia(rootEl) {
 const emit = defineEmits(['update:modelValue', 'change'])
 
 // ByteMD 插件集合
+// 为 Highlight.js 动态注册额外语言（SAS 及相近语言），避免构建期硬依赖
 const plugins = [
   gfm(),
   math(),
   mermaidPlugin({ mermaid }),
-  highlight()
+  highlight({
+    init: async (hljs) => {
+      // 动态按需引入，防止在某些版本下不存在导致构建失败
+      const tryReg = async (name, mod) => {
+        try {
+          const m = await import(mod)
+          if (m && (m.default || m[name])) {
+            hljs.registerLanguage(name, m.default || m[name])
+          }
+        } catch (e) {
+          // 忽略不可用的语言模块
+          try { console.warn('[bytemd-highlight] register failed for', name, String(e?.message || e)) } catch {}
+        }
+      }
+      // SAS 及相近语言
+      await tryReg('sas', 'highlight.js/lib/languages/sas')
+      await tryReg('r', 'highlight.js/lib/languages/r')
+      await tryReg('stata', 'highlight.js/lib/languages/stata')
+    }
+  })
 ]
 
 // 日志器（作用域：MarkdownEditor）

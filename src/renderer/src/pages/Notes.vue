@@ -25,7 +25,9 @@ import {
   ArrowRightBold,
   Check,
   Setting,
-  Notebook
+  Notebook,
+  ArrowUp,
+  ArrowDown
 } from '@element-plus/icons-vue'
 // Iconify（用于丰富的文件/目录图标）
 import { Icon, addCollection } from '@iconify/vue'
@@ -102,6 +104,108 @@ const mdRef = ref(null)
 const editorTheme = ref('github') // 可选：github | dark | classic | solarized | sepia | nord | ctbb
 const THEME_KEY = 'notes.editorTheme'
 const validThemes = ['github', 'dark', 'classic', 'solarized', 'sepia', 'nord', 'ctbb']
+
+// =================
+// 文件树排序：状态与持久化
+// =================
+const SORT_FIELD_KEY = 'notes.sortField'
+const SORT_ORDER_KEY = 'notes.sortOrder'
+// 可选字段：name | mtime | type
+const sortField = ref('name')
+// 可选顺序：asc | desc
+const sortOrder = ref('asc')
+
+// 读取/应用排序偏好
+const _applySavedSortPrefs = async () => {
+  try {
+    const f = await window.api.settingsGet(SORT_FIELD_KEY)
+    const o = await window.api.settingsGet(SORT_ORDER_KEY)
+    if (f?.ok && ['name', 'mtime', 'type'].includes(f.value)) sortField.value = f.value
+    if (o?.ok && ['asc', 'desc'].includes(o.value)) sortOrder.value = o.value
+  } catch {}
+}
+
+// 持久化排序偏好
+watch([sortField, sortOrder], async () => {
+  try { await window.api.settingsSet(SORT_FIELD_KEY, sortField.value) } catch {}
+  try { await window.api.settingsSet(SORT_ORDER_KEY, sortOrder.value) } catch {}
+  // 即时对现有树进行重排
+  try { await resortCurrentTree() } catch {}
+})
+
+// 计算类型键（用于 type 排序）
+const _getTypeKey = (name, isDir) => {
+  if (isDir) return '0_dir'
+  const nm = String(name || '').toLowerCase()
+  const ext = nm.includes('.') ? nm.split('.').pop() : ''
+  return `1_${ext}`
+}
+
+// 为节点补充用于排序的元数据（mtime、typeKey）
+const enrichMeta = async (nodes) => {
+  const visit = async (arr) => {
+    for (const n of arr) {
+      // typeKey：目录优先（前缀 0_），文件其次（前缀 1_）
+      n.typeKey = _getTypeKey(n.name, !!n.isDir)
+      // mtime：从 fsStat 获取，失败回退 0
+      let mt = 0
+      try {
+        const st = await window.api.fsStat({ relativePath: n.path })
+        if (st?.ok) {
+          // 兼容不同返回结构
+          if (typeof st.mtimeMs === 'number') mt = st.mtimeMs
+          else if (st.mtime) mt = new Date(st.mtime).getTime()
+          else if (st.mtimeISO) mt = new Date(st.mtimeISO).getTime()
+        }
+      } catch {}
+      n.mtime = mt || 0
+      if (n.isDir && Array.isArray(n.children) && n.children.length) {
+        await visit(n.children)
+      }
+    }
+  }
+  await visit(nodes)
+}
+
+// 比较器
+const _cmp = (a, b) => {
+  const dirBias = a.isDir === b.isDir ? 0 : (a.isDir ? -1 : 1) // 目录在前
+  if (dirBias !== 0) return dirBias
+  let va, vb
+  if (sortField.value === 'mtime') {
+    va = a.mtime || 0
+    vb = b.mtime || 0
+  } else if (sortField.value === 'type') {
+    va = a.typeKey || ''
+    vb = b.typeKey || ''
+  } else {
+    va = String(a.name || '').toLowerCase()
+    vb = String(b.name || '').toLowerCase()
+  }
+  const base = va < vb ? -1 : va > vb ? 1 : 0
+  return sortOrder.value === 'desc' ? -base : base
+}
+
+// 递归排序函数（不破坏展开状态）
+const applySortToTree = (arr) => {
+  if (!Array.isArray(arr)) return
+  arr.sort(_cmp)
+  for (const n of arr) {
+    if (n && n.isDir && Array.isArray(n.children)) applySortToTree(n.children)
+  }
+}
+
+// 对当前 treeData 进行就地重排并触发刷新
+const resortCurrentTree = async () => {
+  try {
+    // 先补充元数据（主要是 mtime 可能缺失）
+    await enrichMeta(treeData.value)
+  } catch {}
+  // 排序并触发视图更新（重新赋值引用）
+  const cloned = JSON.parse(JSON.stringify(treeData.value || []))
+  applySortToTree(cloned)
+  treeData.value = cloned
+}
 
 // 最近文件管理对话框
 const recentDialogVisible = ref(false)
@@ -886,12 +990,11 @@ const readGitConfig = async () => {
     }
   }
 
-// 强拉：以远端为准覆盖本地（危险操作）
 const doForcePull = async () => {
   const { branch: br } = await readGitConfig()
   try {
     await ElMessageBox.confirm(
-      `将以远端 origin/${br} 覆盖本地当前分支，未提交的改动将丢失。继续吗？`,
+      `将以远端 origin/${br} 强制覆盖本地当前分支，所有本地未推送提交将丢失。继续吗？`,
       '强拉（远端覆盖本地）',
       {
         confirmButtonText: '继续',
@@ -903,38 +1006,32 @@ const doForcePull = async () => {
     return
   }
   try {
-    // 确保主进程已打开 Vault，以便设置 currentVaultDir
+    forcePulling.value = true
+    // 确保主进程已打开 Vault
     let vd = vaultDir.value
     if (!vd) {
       const rvd = await window.api.settingsGet('vaultDir')
       if (rvd?.ok && rvd.value) vd = rvd.value
     }
-    if (vd) {
-      const opened = await window.api.openVault(vd)
-      if (!opened?.ok) {
-        ElMessage.error(opened?.reason || '无法打开本地库目录，请返回设置页重新选择')
-        await log.error('强拉前打开 Vault 失败：', opened?.reason || '')
-        return
-      }
-    }
+    // 确保 Git 仓库就绪
+    const ok = await ensureGitReady()
+    if (!ok) return
     // 优先尝试主进程提供的强制操作 API
     if (window.api?.gitForceResetToRemote) {
       const r = await window.api.gitForceResetToRemote({ branch: br })
       if (r?.ok) {
-        ElMessage.success('已强制同步到远端最新')
-        try { await log.info('强拉完成：已重置到 origin/' + br) } catch {}
-        try { await loadNotesList?.() } catch {}
+        ElMessage.success('已强制从远端重置本地')
+        try { await log.info('强拉完成：origin/' + br) } catch {}
+        await loadNotesList()
         return
       } else {
-        // 有接口但失败，展示原因
         const reason = r?.reason ? String(r.reason) : '未知原因'
         await log.warn('强拉失败：', reason)
-        await ElMessageBox.alert(`强拉失败：${reason}`, '执行失败', { confirmButtonText: '知道了' })
+        await ElMessageBox.alert(`强拉失败：${reason}`,'执行失败',{ confirmButtonText: '知道了' })
         return
       }
     }
-    // 回退：给出命令指引
-    const cmd = `git fetch\ngit reset --hard origin/${br}`
+    const cmd = `git fetch --all && git reset --hard origin/${br}`
     await ElMessageBox.alert(
       `未检测到内置强制操作接口。请在仓库目录执行：\n\n${cmd}`,
       '请在终端执行',
@@ -942,6 +1039,8 @@ const doForcePull = async () => {
     )
   } catch (e) {
     ElMessage.error(String(e?.message || e))
+  } finally {
+    forcePulling.value = false
   }
 }
 
@@ -962,6 +1061,7 @@ const doForcePush = async () => {
     return
   }
   try {
+    forcePushing.value = true
     // 确保主进程已打开 Vault，以便设置 currentVaultDir
     let vd = vaultDir.value
     if (!vd) {
@@ -975,6 +1075,18 @@ const doForcePush = async () => {
         await log.error('强推前打开 Vault 失败：', opened?.reason || '')
         return
       }
+    }
+    // 确保 Git 仓库就绪
+    const ok = await ensureGitReady()
+    if (!ok) return
+    // 先进行一次提交，确保包含新建的 .gitkeep 等文件
+    try {
+      const cr = await window.api.gitCommit({ message: commitMsg.value || 'update notes' })
+      if (cr?.ok) {
+        try { await log.info('强推前已自动提交：', commitMsg.value) } catch {}
+      }
+    } catch (e) {
+      // 忽略空提交错误（nothing to commit 已在主进程处理为非致命）
     }
     // 优先尝试主进程提供的强制操作 API
     if (window.api?.gitForcePush) {
@@ -999,6 +1111,8 @@ const doForcePush = async () => {
     )
   } catch (e) {
     ElMessage.error(String(e?.message || e))
+  } finally {
+    forcePushing.value = false
   }
 }
 
@@ -1257,7 +1371,14 @@ const newFolder = async () => {
   const path = `${baseDir}/${name}`
   const res = await window.api.fsMkdir({ relativePath: path })
   if (res?.ok) {
+    // 新建成功后，写入一个空的 .gitkeep，确保空目录能被 Git 跟踪
+    try {
+      await window.api.fsWriteFile({ relativePath: `${path}/.gitkeep`, content: '' })
+    } catch (e) {
+      await log.warn('创建 .gitkeep 失败：', String(e?.message || e))
+    }
     await loadNotesList()
+    await ensureDirExpanded(baseDir)
     ElMessage.success('已创建文件夹')
     await log.info('已创建文件夹：', path)
   } else {
@@ -1273,10 +1394,53 @@ const gitRepo = ref('notes')
 const gitBranch = ref('main')
 const commitMsg = ref('update notes')
 const syncing = ref(false)
+// Git 危险操作的加载状态
+const forcePulling = ref(false)
+const forcePushing = ref(false)
 const gitUserName = ref('')
 const gitUserEmail = ref('')
 
 // 加载 notes/ 目录树，并同步构建扁平文件列表
+// 辅助：记录/恢复树的展开状态（避免刷新后折叠）
+const getExpandedPaths = () => {
+  const paths = []
+  try {
+    if (!treeRef.value) return paths
+    const walk = (arr) => {
+      for (const n of arr || []) {
+        if (n.isDir) {
+          try {
+            const nd = treeRef.value.getNode?.(n.path)
+            if (nd?.expanded) paths.push(n.path)
+          } catch {}
+          walk(n.children || [])
+        }
+      }
+    }
+    walk(treeData.value)
+  } catch {}
+  return paths
+}
+const restoreExpanded = async (paths) => {
+  try {
+    await nextTick()
+    if (!treeRef.value) return
+    for (const p of paths || []) {
+      try {
+        const nd = treeRef.value.getNode?.(p)
+        if (nd) nd.expanded = true
+      } catch {}
+    }
+  } catch {}
+}
+const ensureDirExpanded = async (dir) => {
+  try {
+    if (!dir) return
+    await nextTick()
+    const nd = treeRef.value?.getNode?.(dir)
+    if (nd) nd.expanded = true
+  } catch {}
+}
 const loadNotesList = async () => {
   if (!vaultDir.value) return
   await log.debug('开始加载树形列表，vault=', vaultDir.value)
@@ -1298,14 +1462,22 @@ const loadNotesList = async () => {
   }
   const raw = Array.isArray(res.tree) ? res.tree : []
   const convert = (nodes) =>
-    nodes.map((n) => ({
+    nodes
+      // 过滤 .gitkeep 等占位文件，避免在树中显示
+      .filter((n) => n.name !== '.gitkeep')
+      .map((n) => ({
       label: n.name,
       name: n.name,
       path: n.path.startsWith('notes/') ? n.path : `notes/${n.path}`,
       isDir: !!n.isDir,
       children: n.children ? convert(n.children) : []
     }))
+  // 记录刷新前的展开目录
+  const prevExpanded = getExpandedPaths()
   const built = convert(raw)
+  // 补充元数据后应用排序
+  try { await enrichMeta(built) } catch {}
+  applySortToTree(built)
   treeData.value = built
   // 构建扁平文件数组（仅文件）供全文检索使用
   const flat = []
@@ -1318,6 +1490,8 @@ const loadNotesList = async () => {
   walk(built)
   files.value = flat
   await log.info('目录树已加载：根节点数=', built.length, '文件数=', flat.length)
+  // 恢复展开目录
+  await restoreExpanded(prevExpanded)
 }
 
 // 计算属性：按关键字过滤文件列表
@@ -1570,6 +1744,37 @@ const onNodeClick = (data) => {
   onItemClick(data)
 }
 
+// 树节点双击：
+// - 目录：展开/收起
+// - 文件：勾选/取消勾选
+const onNodeDblClick = (data, node) => {
+  try {
+    if (!data) return
+    if (data.isDir) {
+      // 目录：展开/收起
+      if (node) {
+        node.expanded = !node.expanded
+        return
+      }
+      if (treeRef.value && typeof treeRef.value.getNode === 'function') {
+        const nd = treeRef.value.getNode(data.path)
+        if (nd) nd.expanded = !nd.expanded
+      }
+      return
+    }
+    // 文件：切换勾选
+    if (!treeRef.value) return
+    const nd = typeof treeRef.value.getNode === 'function' ? treeRef.value.getNode(data.path) : null
+    const checked = !!(nd?.checked)
+    if (typeof treeRef.value.setChecked === 'function') {
+      // 第三个参数 deep=false 仅切换当前节点
+      treeRef.value.setChecked(data, !checked, false)
+    } else if (nd) {
+      nd.checked = !checked
+    }
+  } catch {}
+}
+
 // 右键菜单：在树节点上打开上下文菜单
 const onNodeContextMenu = (event, data, node) => {
   try {
@@ -1715,6 +1920,7 @@ const newNote = async () => {
   const res = await window.api.fsWriteFile({ relativePath: path, content: initial })
   if (res?.ok) {
     await loadNotesList()
+    await ensureDirExpanded(baseDir)
     await openFile(path)
     ElMessage.success('已创建新笔记')
     await log.info('已创建新笔记：', path)
@@ -2195,6 +2401,8 @@ onMounted(async () => {
     } catch (e) {
       await log.warn('读取侧栏宽度失败：', String(e?.message || e))
     }
+    // 读取并应用排序偏好
+    await _applySavedSortPrefs()
   } catch {}
 })
 
@@ -2303,6 +2511,19 @@ function onEditorThemeChange(v) {
           </el-tooltip>
           <span v-if="searchModeFull && searching" class="tip-muted">检索中...</span>
           <div class="flex-1"></div>
+          <!-- 排序控件：字段选择 + 升降序切换 -->
+          <el-select v-model="sortField" size="small" style="width: 132px; margin-right: 6px" placeholder="排序方式">
+            <el-option label="名称" value="name" />
+            <el-option label="修改时间" value="mtime" />
+            <el-option label="类型" value="type" />
+          </el-select>
+          <el-tooltip :content="sortOrder === 'asc' ? '升序' : '降序'" placement="bottom">
+            <el-button circle size="small" @click="sortOrder = sortOrder === 'asc' ? 'desc' : 'asc'">
+              <el-icon v-if="sortOrder === 'asc'"><ArrowUp /></el-icon>
+              <el-icon v-else><ArrowDown /></el-icon>
+            </el-button>
+          </el-tooltip>
+          <span style="width:6px;display:inline-block;"></span>
           <el-tooltip content="刷新列表" placement="bottom">
             <el-button circle :icon="Refresh" @click="loadNotesList" />
           </el-tooltip>
@@ -2339,6 +2560,7 @@ function onEditorThemeChange(v) {
                 class="tree-row"
                 :class="{ active: currentFile === data.path }"
                 @click.stop="onNodeClick(data)"
+                @dblclick.stop="onNodeDblClick(data, node)"
               >
                 <Icon
                   class="mr-1"
@@ -2523,10 +2745,22 @@ function onEditorThemeChange(v) {
             </el-tooltip>
             <span style="width:8px;display:inline-block;"></span>
             <el-tooltip content="强拉：以远端为最终结果，覆盖本地" placement="top">
-              <el-button size="small" @click="doForcePull">强拉</el-button>
+              <el-button
+                size="small"
+                type="primary"
+                @click="doForcePull"
+                :loading="forcePulling"
+                :disabled="syncing || forcePushing || forcePulling"
+              >强拉</el-button>
             </el-tooltip>
             <el-tooltip content="强推：以本地为最终结果，覆盖远端" placement="top">
-              <el-button size="small" type="danger" @click="doForcePush">强推</el-button>
+              <el-button
+                size="small"
+                type="danger"
+                @click="doForcePush"
+                :loading="forcePushing"
+                :disabled="syncing || forcePulling || forcePushing"
+              >强推</el-button>
             </el-tooltip>
             <el-tooltip content="最近文件管理" placement="top">
               <el-button size="small" :icon="Notebook" @click="openRecentDialog">最近</el-button>
@@ -2563,12 +2797,19 @@ function onEditorThemeChange(v) {
           </el-scrollbar>
         </div>
 
-        <!-- Git 提交 / 同步 工具条（需已打开文件） -->
-        <div v-if="currentFile" class="git-bar">
+        <!-- Git 提交 / 同步 工具条（全局可用） -->
+        <div class="git-bar">
           <div class="right">
             <el-input v-model="commitMsg" placeholder="提交信息" class="min-w-[180px]" />
             <el-tooltip content="提交并同步" placement="top">
-              <el-button circle type="success" :loading="syncing" :icon="Refresh" @click="doSync" />
+              <el-button
+                circle
+                type="primary"
+                :loading="syncing"
+                :disabled="forcePulling || forcePushing || syncing"
+                :icon="Refresh"
+                @click="doSync"
+              />
             </el-tooltip>
           </div>
         </div>
@@ -2677,7 +2918,7 @@ function onEditorThemeChange(v) {
 }
 .page-head .title {
   font-weight: 600;
-  color: #ef5da8; /* 与原小标题风格相近 */
+  color: var(--brand-color); /* 与主题色联动 */
   font-size: 14px; /* 降低标题字号 */
 }
 .page-head .vault {
@@ -2691,7 +2932,7 @@ function onEditorThemeChange(v) {
 
 /* 顶部图标样式（替代“笔记”文字） */
 .app-logo {
-  color: #ef5da8; /* 与标题色保持一致 */
+  color: var(--brand-color); /* 与标题色保持一致，随主题变化 */
   font-size: 16px;
   margin-right: 6px;
 }

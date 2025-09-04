@@ -456,6 +456,39 @@ app.whenReady().then(async () => {
   const tempCredentials = new Map() // key: account, value: token
   const CREDENTIAL_STORE_PREFIX = 'credentials.' // electron-store 中的命名空间前缀
 
+  // =============
+  // 凭据清理工具
+  // =============
+  const clearAllCredentials = () => {
+    try {
+      // 删除 electron-store 中的所有凭据项
+      const all = (store && store.store) ? store.store : null
+      if (all && typeof all === 'object') {
+        Object.keys(all)
+          .filter((k) => typeof k === 'string' && k.startsWith(CREDENTIAL_STORE_PREFIX))
+          .forEach((k) => {
+            try { store.delete?.(k) } catch {}
+          })
+      } else {
+        // 无法枚举：尝试常见账号键兜底（若有需要可在此扩展）
+      }
+      try { tempCredentials.clear() } catch {}
+      try { log.info('[凭据清理] 已清空所有 PAT（store + memory）') } catch {}
+    } catch (e) {
+      try { log.warn('[凭据清理] 执行异常：', String(e?.message || e)) } catch {}
+    }
+  }
+
+  // 仅在真正退出应用时清空（防止用户在关闭确认中取消导致凭据被误清）
+  let clearPatOnQuit = false
+  app.on('before-quit', () => {
+    try {
+      if (clearPatOnQuit) {
+        clearAllCredentials()
+      }
+    } catch {}
+  })
+
   // 启动时尝试从设置恢复 Vault 目录（若存在且有效）
   try {
     const savedVault = store.get?.('vault.dir')
@@ -1077,6 +1110,52 @@ app.whenReady().then(async () => {
         { type: 'separator' },
         { label: '最近打开', enabled: recentMenu.length > 0, submenu: recentMenu.length > 0 ? recentMenu : undefined },
         { label: '清空最近', enabled: recentMenu.length > 0, click: () => clearRecent() },
+        { type: 'separator' },
+        {
+          label: '清空 PAT 并退出',
+          click: async () => {
+            try {
+              // 若有主窗口，则让渲染端用 Element Plus 弹窗确认
+              if (mainWindowRef && !mainWindowRef.isDestroyed?.()) {
+                try { mainWindowRef.show?.(); mainWindowRef.focus?.() } catch {}
+                const ok = await new Promise((resolve) => {
+                  let settled = false
+                  const done = (v) => { if (!settled) { settled = true; resolve(!!v) } }
+                  try {
+                    const { ipcMain } = require('electron')
+                    ipcMain.once('ui:confirm-clear-pat-quit:reply', (_evt, payload) => {
+                      done(!!payload?.ok)
+                    })
+                  } catch { /* ignore */ }
+                  try { mainWindowRef.webContents?.send('ui:confirm-clear-pat-quit') } catch {}
+                  // 超时兜底，避免卡死
+                  setTimeout(() => done(false), 30000)
+                })
+                if (ok) {
+                  clearPatOnQuit = true
+                  app.quit()
+                }
+              } else {
+                // 回退：使用原生对话框
+                const res = await dialog.showMessageBox({
+                  type: 'warning',
+                  title: '确认退出',
+                  message: '将清空已保存的 PAT 并关闭应用',
+                  detail: '请先在应用中保存所有未保存的文件，并执行同步（Git 推送）。点击“确定”后将清空凭据并退出。',
+                  buttons: ['取消', '确定'],
+                  cancelId: 0,
+                  defaultId: 0
+                })
+                if (res.response === 1) {
+                  clearPatOnQuit = true
+                  app.quit()
+                }
+              }
+            } catch (e) {
+              try { log.warn('[Tray] 清空 PAT 并退出 流程异常：', String(e?.message || e)) } catch {}
+            }
+          }
+        },
         { type: 'separator' },
         { label: '退出', role: 'quit' }
       ]

@@ -72,22 +72,7 @@
         </ul>
       </el-card>
 
-      <!-- 多类型文件支持 -->
-      <el-card shadow="never" class="info-card">
-        <template #header>
-          <div class="card-head">
-            <span>多类型文件支持</span>
-          </div>
-        </template>
-        <ul class="bullet">
-          <li>Markdown：内置编辑器，支持主题切换与图片就近保存</li>
-          <li>图片：PNG · JPG · GIF · WebP · BMP · SVG（以 data URL 安全预览）</li>
-          <li>PDF：以 data URL 在 iframe 中预览（已放宽 CSP）</li>
-          <li>HTML：读取文本并以 iframe srcdoc 渲染（相对资源不自动加载）</li>
-          <li>纯文本：常见文本/配置/代码文件以只读形式快速查看</li>
-          <li>安全性：渲染端不直接访问 file://，均通过 IPC 读取后安全展示</li>
-        </ul>
-      </el-card>
+      
 
       
     </div>

@@ -274,7 +274,7 @@ const onSavePasteImage = async () => {
     <!-- 顶部标题 + 开始使用按钮（当 PAT 已保存时显示） -->
     <div class="flex items-center justify-between mb-2">
       <h2 class="section-title">基础配置</h2>
-      <el-button v-if="patSaved" type="success" @click="router.push('/welcome')">开始使用</el-button>
+      <el-button v-if="patSaved" type="primary" @click="router.push('/welcome')">开始使用</el-button>
     </div>
 
     <!-- Vault 区块 -->
